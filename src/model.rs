@@ -694,6 +694,21 @@ pub fn bubble_box(at: Pt, text: &str, size: f32, text_size: &impl TextSize) -> B
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Doc {
     pub annotations: Vec<Annotation>,
+    // --- Lot « Éditeur : image et effets » (voir `crate::effects`) ---
+    /// Retouches de l'image d'origine (recadrage, rotation…), rejouées dans l'ordre.
+    /// Les annotations sont en pixels de l'image retouchée.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<crate::effects::ImageEdit>,
+    /// Bordure et effets, appliqués à l'export après les annotations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border: Option<crate::effects::BorderEffects>,
+    /// Zone de travail automatique : à l'export, l'image s'agrandit (sur ce fond)
+    /// pour contenir les annotations qui dépassent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_auto: Option<crate::effects::Background>,
+    /// Résolution écrite dans le PNG exporté (métadonnée seule).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dpi: Option<f32>,
 }
 
 impl Doc {
@@ -886,6 +901,7 @@ mod tests {
                 size: 24.0,
                 tail: Pt::new(0.0, 80.0),
             })],
+            ..Doc::default()
         };
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.contains(r#""kind":"bubble""#), "{json}");

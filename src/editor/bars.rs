@@ -64,6 +64,7 @@ impl Editor {
             }
             ui.separator();
             self.presets_bar(ui);
+            self.image_button(ui);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let copy = egui::Button::new(
                     RichText::new(format!("{}  Copier", icons::COPY))
