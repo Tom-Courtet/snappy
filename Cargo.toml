@@ -16,6 +16,7 @@ eframe = { version = "0.37.0", default-features = false, features = ["glow", "de
 egui = { version = "0.37", default-features = false }
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
 global-hotkey = "0.10.0"
+# Lot « Espace de travail » : jpeg, bmp, tiff, gif, webp pour « Enregistrer sous… ».
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tiff", "gif", "webp"] }
 jiff = "1.0.1"
 log = "0.4.35"
@@ -51,7 +52,7 @@ rqrr = { version = "0.11.0", default-features = false }
 block2 = "0.6.2"
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSApplication", "NSResponder", "NSRunningApplication", "NSWorkspace", "NSWindow", "NSView", "NSScreen", "NSGraphics", "NSEvent", "NSColorSpace", "NSCursor", "NSImage", "NSImageRep", "NSGraphicsContext", "objc2-core-graphics", "NSPasteboard"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSNotification", "NSObject", "NSOperation", "NSString", "NSGeometry", "NSArray", "NSDictionary", "NSValue", "NSURL", "NSData", "NSProcessInfo", "NSError"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSNotification", "NSObject", "NSOperation", "NSString", "NSGeometry", "NSArray", "NSDictionary", "NSValue", "NSURL", "NSData", "NSProcessInfo", "NSError", "NSFileManager"] }
 
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFString", "CFArray", "CFDictionary", "CFNumber"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGEvent", "CGEventTypes", "CGImage", "CGWindow", "CGWindowLevel", "CGGeometry", "CGRemoteOperation", "libc"] }
@@ -72,6 +73,10 @@ objc2-core-media = { version = "0.3.2", default-features = false, features = ["s
 # --- Lot « Réglages, raccourcis, après capture » ---
 # Lancement à l'ouverture de session (SMAppService, macOS 13+).
 objc2-service-management = { version = "0.3.2", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"] }
+
+# Lot « Espace de travail » : glisser des captures de la fenêtre vers le Finder, Mail…
+# (CrabNebula, MIT/Apache-2.0 ; macOS seulement, sa version Windows tire windows 0.52).
+drag = "2.1.1"
 
 # Capture GDI, DPI par écran, position de la surcouche, console pour la ligne de
 # commande. Déjà tiré par tray-icon et winit.

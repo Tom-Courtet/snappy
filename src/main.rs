@@ -20,6 +20,7 @@ mod capture_modes;
 mod config;
 mod editor;
 mod effects;
+mod files;
 mod history;
 mod ipc;
 mod model;

@@ -193,9 +193,21 @@ fn follow(then: AfterCapture, capture: Option<&Path>) -> Result<()> {
     }
 }
 
-/// L'espace de travail dans son propre processus. Pas par l'agent : il refuse une
-/// nouvelle « capture » tant que celle-ci (ce processus) n'est pas terminée.
+/// L'espace de travail : par l'agent (une seule fenêtre, sous l'icône), sinon dans
+/// son propre processus.
 fn open_workspace() -> Result<()> {
+    if let Ok(store) = crate::config::Store::open_default() {
+        let request = crate::ipc::Request::Capture {
+            mode: Mode::Workspace,
+            delay: 0,
+        };
+        if matches!(
+            crate::ipc::request(&store.socket_path(), &request),
+            Ok(crate::ipc::Response::Ok)
+        ) {
+            return Ok(());
+        }
+    }
     let exe = std::env::current_exe().context("chemin de l'exécutable")?;
     Command::new(exe)
         .args(["--capture", Mode::Workspace.arg()])
