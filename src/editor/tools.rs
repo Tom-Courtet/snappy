@@ -534,7 +534,12 @@ pub fn new_shape(tool: Tool, p: Pt, style: &Style, m: Metrics, next_step: u32) -
 /// Prolonge le tracé jusqu'à `p`. ⇧ : angle multiple de 45° (traits) ou carré/cercle.
 pub fn extend_shape(shape: &mut Shape, p: Pt, shift: bool) {
     match shape {
-        Shape::Arrow { from, to, .. } | Shape::Line { from, to } => {
+        // Flèche : on appuie sur ce qu'on montre (la pointe reste là) et on glisse
+        // vers le départ de la flèche.
+        Shape::Arrow { from, to, .. } => {
+            *from = if shift { snap_45(*to, p) } else { p };
+        }
+        Shape::Line { from, to } => {
             *to = if shift { snap_45(*from, p) } else { p };
         }
         Shape::Rect { a, b, .. } | Shape::Ellipse { a, b } => {
@@ -549,8 +554,18 @@ pub fn extend_shape(shape: &mut Shape, p: Pt, shift: bool) {
                 points.push(p);
             }
         }
-        // Glisser depuis la pastille : sa pointe suit la souris.
-        Shape::Step { at, tail, .. } => *tail = (at.dist(p) > 4.0).then_some(p),
+        // Glisser : on appuie sur ce qu'on montre (la pointe y reste) et la pastille
+        // suit la souris. Revenu sur le point de départ : pastille sans pointe.
+        Shape::Step { at, tail, .. } => {
+            let target = tail.unwrap_or(*at);
+            if target.dist(p) > 4.0 {
+                *tail = Some(target);
+                *at = p;
+            } else {
+                *at = target;
+                *tail = None;
+            }
+        }
         // Le rayon de la zone grossie suit la souris ; la loupe se place en haut à
         // droite, sans la recouvrir.
         Shape::Magnifier {
@@ -629,18 +644,42 @@ mod tests {
     }
 
     #[test]
-    fn dragging_a_step_gives_it_a_tail() {
+    fn dragging_a_step_points_at_the_press() {
+        // On appuie sur ce qu'on montre, la pastille suit la souris.
         let mut shape =
             new_shape(Tool::Step, Pt::new(10.0, 10.0), &Style::default(), M, 3).unwrap();
         extend_shape(&mut shape, Pt::new(80.0, 10.0), false);
+        extend_shape(&mut shape, Pt::new(90.0, 30.0), false);
+        assert_eq!(
+            shape,
+            Shape::Step {
+                at: Pt::new(90.0, 30.0),
+                number: 3,
+                tail: Some(Pt::new(10.0, 10.0))
+            }
+        );
+        // Revenue sur le point d'appui : plus de pointe.
+        extend_shape(&mut shape, Pt::new(11.0, 10.0), false);
         assert_eq!(
             shape,
             Shape::Step {
                 at: Pt::new(10.0, 10.0),
                 number: 3,
-                tail: Some(Pt::new(80.0, 10.0))
+                tail: None
             }
         );
+    }
+
+    #[test]
+    fn arrows_point_where_the_drag_starts() {
+        let mut shape =
+            new_shape(Tool::Arrow, Pt::new(10.0, 10.0), &Style::default(), M, 1).unwrap();
+        extend_shape(&mut shape, Pt::new(100.0, 60.0), false);
+        let Shape::Arrow { from, to, .. } = shape else {
+            panic!("flèche attendue")
+        };
+        assert_eq!(to, Pt::new(10.0, 10.0), "la pointe reste sur l'appui");
+        assert_eq!(from, Pt::new(100.0, 60.0));
     }
 
     #[test]

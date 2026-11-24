@@ -418,6 +418,19 @@ impl Editor {
     /// Dessins ajoutés par ce lot : annotations déplacées ensemble, cadres de la
     /// sélection multiple, rectangle de sélection, zone à copier, polygone en cours.
     pub(super) fn extra_paint(&self, painter: &egui::Painter, view: View) {
+        // Bulle en cours de placement : de la pointe à l'endroit de la bulle.
+        if let Some(Drag::Bubble { tip, end }) = self.drag {
+            let color = preview::color32(self.style.color);
+            let (a, b) = (view.to_screen(tip), view.to_screen(end));
+            painter.line_segment([a, b], egui::Stroke::new(2.0, color));
+            painter.circle_filled(a, 4.0, color);
+            painter.rect_stroke(
+                egui::Rect::from_center_size(b, egui::vec2(60.0, 32.0)),
+                8.0,
+                egui::Stroke::new(2.0, color),
+                egui::StrokeKind::Middle,
+            );
+        }
         let single = self.hidden();
         if self.text.is_none() {
             for i in self.hidden_all() {

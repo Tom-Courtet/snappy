@@ -119,6 +119,9 @@ enum Drag {
     Marquee { from: Pt, to: Pt },
     /// Zone à copier (« Copier une partie de l'image »).
     Grab { from: Pt, to: Pt },
+    /// Nouvelle bulle : appui sur ce qu'elle montre (`tip`, la pointe), relâché là
+    /// où va la bulle (`end`).
+    Bubble { tip: Pt, end: Pt },
 }
 
 /// Texte en cours de saisie : texte simple (sur fond ou non) ou bulle.
@@ -1039,6 +1042,12 @@ impl Editor {
                     }
                     None => self.selected = None,
                 }
+            } else if self.tool == Tool::Bubble {
+                self.selected = None;
+                self.drag = Some(Drag::Bubble {
+                    tip: start,
+                    end: start,
+                });
             } else if let Some(shape) =
                 new_shape(self.tool, start, &self.style, m, self.peek_step())
             {
@@ -1082,6 +1091,9 @@ impl Editor {
                         moved: true,
                     });
                 }
+                Drag::Bubble { tip, .. } => {
+                    self.drag = Some(Drag::Bubble { tip, end: pt });
+                }
                 // Gérés par `extra_pointer`.
                 Drag::Marquee { .. } | Drag::Grab { .. } => {}
             }
@@ -1109,6 +1121,16 @@ impl Editor {
                     self.undo.pop();
                 }
                 Some(Drag::Move { .. } | Drag::Handle { .. }) => self.changed(),
+                Some(Drag::Bubble { tip, end }) => {
+                    let m = self.metrics();
+                    if tip.dist(end) < m.text {
+                        // Glisser trop court : comme un clic.
+                        self.text_click(end, view.scale, true);
+                    } else {
+                        let at = Pt::new(end.x, end.y - m.text * 0.6);
+                        self.start_text(at, None, TextKind::Bubble { tail: tip });
+                    }
+                }
                 Some(Drag::Marquee { .. } | Drag::Grab { .. }) | None => {}
             }
             self.rendered = None;
