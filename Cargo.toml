@@ -1,0 +1,65 @@
+[package]
+name = "snappy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Snappy : capture d'écran légère, annotations non destructives, en Rust"
+license = "MIT"
+publish = false
+
+[dependencies]
+ab_glyph = "0.2.32"
+anyhow = "1.0.104"
+arboard = "3.7.0"
+directories = "6.0.0"
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
+egui = { version = "0.37", default-features = false }
+env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
+global-hotkey = "0.10.0"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+jiff = "1.0.1"
+log = "0.4.35"
+raw-window-handle = "0.6.2"
+# Choix du dossier d'export dans les réglages (boîte de dialogue native).
+rfd = { version = "0.18.0", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# Rendu des annotations (écran et export) : un seul moteur, donc ce qu'on voit est
+# exactement ce qui est exporté.
+tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "simd"] }
+tray-icon = { version = "0.26.1", default-features = false }
+# Boucle d'événements de l'agent (barre des menus, raccourcis globaux) sans fenêtre.
+# Déjà tiré par eframe : aucun poids en plus.
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSApplication", "NSResponder", "NSRunningApplication", "NSWorkspace", "NSWindow", "NSView", "NSScreen", "NSGraphics", "NSEvent", "NSColorSpace", "NSCursor", "NSImage", "NSImageRep", "NSGraphicsContext", "objc2-core-graphics"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSNotification", "NSObject", "NSOperation", "NSString", "NSGeometry", "NSArray", "NSDictionary", "NSValue"] }
+
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFString", "CFArray", "CFDictionary", "CFNumber"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGEvent", "CGEventTypes", "CGImage", "CGWindow", "CGWindowLevel", "CGGeometry", "CGRemoteOperation", "libc"] }
+
+# Capture GDI, DPI par écran, position de la surcouche, console pour la ligne de
+# commande. Déjà tiré par tray-icon et winit.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Les dépendances (PNG, rendu) restent optimisées en debug, sinon `cargo run` est lent
+# sur les captures Retina.
+[profile.dev.package."*"]
+opt-level = 2
+
+[build-dependencies]
+winresource = "0.1.34"
