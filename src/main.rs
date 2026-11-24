@@ -65,6 +65,8 @@ Usage :
                           imprime une capture (avec ses annotations)
   snappy --document <png>...
                           générateur de documents (PDF, HTML, GIF animé)
+  snappy --ocr <png>      texte d'une image (OCR) sur la sortie standard
+  snappy --qr <png>       QR codes et codes-barres d'une image
   snappy --quit           arrête l'agent
   snappy --version";
 
@@ -109,6 +111,29 @@ fn main() -> Result<()> {
             Err(_) => settings::run(store),
         },
         Some(settings::WINDOW_ARG) => settings::run(store),
+        // Lot « Vision » : OCR, codes, données sensibles, détourage.
+        Some("--ocr") => vision::ocr_file(&PathBuf::from(
+            args.next().context("--ocr attend le chemin d'une image")?,
+        )),
+        Some("--qr") => vision::qr_file(&PathBuf::from(
+            args.next().context("--qr attend le chemin d'une image")?,
+        )),
+        Some("--sensitive") => vision::sensitive_file(&PathBuf::from(
+            args.next()
+                .context("--sensitive attend le chemin d'une image")?,
+        )),
+        Some("--remove-background") => {
+            let input = PathBuf::from(
+                args.next()
+                    .context("--remove-background attend une image")?,
+            );
+            let output = PathBuf::from(
+                args.next()
+                    .context("--remove-background attend le fichier de sortie")?,
+            );
+            vision::remove_background_file(&input, &output)
+        }
+        Some(vision::WINDOW_ARG) => vision::window(),
         Some("--export") => {
             let input = PathBuf::from(args.next().context("--export attend une capture")?);
             let output = PathBuf::from(

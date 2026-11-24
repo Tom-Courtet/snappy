@@ -38,6 +38,13 @@ pdf-writer = "0.15.0"
 gif = "0.14.2"
 # Compression des images du PDF (déjà tiré par png).
 miniz_oxide = "0.8.9"
+# --- Lot « Vision » ---
+# Repérage des données sensibles dans le texte reconnu. Version allégée de `regex`
+# (sans tables Unicode ni dépendance), largement suffisante ici.
+regex-lite = "0.1.9"
+# Décodage des QR codes en pur Rust (macOS et Windows). Licence (MIT OR Apache-2.0) AND ISC.
+rqrr = { version = "0.11.0", default-features = false }
+# --- fin du lot « Vision » ---
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
@@ -47,11 +54,18 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFString", "CFArray", "CFDictionary", "CFNumber"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGEvent", "CGEventTypes", "CGImage", "CGWindow", "CGWindowLevel", "CGGeometry", "CGRemoteOperation", "libc"] }
+# --- Lot « Vision » : OCR, codes-barres et détourage par le framework Vision ---
+objc2-vision = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-video", "VNDetectBarcodesRequest", "VNGenerateForegroundInstanceMaskRequest", "VNObservation", "VNRecognizeTextRequest", "VNRequest", "VNRequestHandler", "VNTypes"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
+# --- fin du lot « Vision » ---
 
 # Capture GDI, DPI par écran, position de la surcouche, console pour la ligne de
 # commande. Déjà tiré par tray-icon et winit.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+# --- Lot « Vision » : OCR de Windows 10 (Windows.Media.Ocr) ---
+windows = { version = "0.62.2", default-features = false, features = ["std", "Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams"] }
+# --- fin du lot « Vision » ---
 
 # --- Lot « Partage, impression, documents » ---
 # Fonctions AppKit en plus pour la feuille de partage, le courriel et l'impression.
