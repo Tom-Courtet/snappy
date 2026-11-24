@@ -31,6 +31,7 @@ mod prefs;
 mod preview;
 mod previews;
 mod tools;
+mod unsaved;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -82,6 +83,7 @@ pub fn run(store: Store, path: PathBuf) -> Result<()> {
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
+            platform::show_in_dock();
             platform::activate(cc);
             Ok(Box::new(Editor::new(store, path, base, doc)))
         }),
@@ -198,6 +200,13 @@ pub(crate) struct Editor {
     grab_part: bool,
     /// Demande de confirmation avant de mettre l'image à la corbeille.
     confirm_delete: bool,
+    // --- Enregistrement à la demande (voir `unsaved.rs`)
+    /// Ce qui est enregistré dans le `.json` de la capture.
+    saved_doc: Doc,
+    /// Question « Enregistrer les modifications ? » en attente.
+    ask_save: Option<unsaved::Pending>,
+    /// Fermeture confirmée : ne plus rien demander.
+    closing: bool,
     /// Marqueur posé dans le presse-papiers interne d'egui, pour recevoir ⌘V.
     paste_marker: bool,
     /// Hauteur du bandeau des propriétés au-dessus de l'image (pixels).
@@ -227,6 +236,7 @@ impl Editor {
     fn new(store: Store, path: PathBuf, base: RgbaImage, doc: Doc) -> Self {
         let prefs_path = Prefs::path(&store);
         let prefs = Prefs::load(&prefs_path);
+        let saved_doc = doc.clone();
         Self {
             hex_input: prefs.style.color.hex(),
             store,
@@ -263,6 +273,9 @@ impl Editor {
             step_from: None,
             grab_part: false,
             confirm_delete: false,
+            saved_doc,
+            ask_save: None,
+            closing: false,
             paste_marker: false,
             banner: 0.0,
             shown_scale: 1.0,
@@ -304,12 +317,10 @@ impl Editor {
         self.redo.clear();
     }
 
-    /// Après une modification : nouveau rendu et sauvegarde des annotations.
+    /// Après une modification : nouveau rendu. Les annotations ne sont écrites dans
+    /// la capture qu'à la demande (Valider, ou la question à la fermeture).
     fn changed(&mut self) {
         self.rendered = None;
-        if let Err(e) = history::save_doc(&self.path, &self.doc) {
-            self.say(format!("Annotations non enregistrées : {e:#}"));
-        }
     }
 
     fn undo(&mut self) {
@@ -1287,6 +1298,8 @@ impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.density = ctx.pixels_per_point().max(1.0);
+        self.guard_close(&ctx);
+        self.save_dialog(&ctx);
         self.image_ui(&ctx);
         self.frame_extras(&ctx);
         self.shortcuts(&ctx);

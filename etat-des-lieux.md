@@ -398,3 +398,12 @@ Tout ce qui suit est **fusionné et compilé** (macOS + Windows), couvert par de
 - **D39 · Données sensibles** : inclure les empreintes hexadécimales (hash de commit) ? **Reco : non.**
 - **D40 · Windows** : glisser-déposer sortant (OLE), feuille de partage, courriel MAPI, vidéo (`windows-capture`), détourage. **Reco : vidéo d'abord (D17), le reste si besoin.**
 - **D41 · « Afficher l'espace de travail après une capture »** (§ 11.6) : c'est le choix « Ensuite → Ouvrir l'espace de travail » de l'onglet Capture, désactivé par défaut. Te convient-il sous cette forme ?
+
+## 10. Changements demandés après essai (24/11/2026, soir)
+
+- **Éditeur : enregistrement à la demande** (demande du propriétaire, remplace l'enregistrement automatique). Les annotations ne sont plus écrites dans la capture à chaque modification. « Valider » enregistre ; à la fermeture (ou avant d'ouvrir une autre image) Snappy demande : **Enregistrer** (sur la capture), **Enregistrer une copie** (`<nom>-copie.png` à côté, l'originale ne change pas), **Ne pas enregistrer**, **Annuler**. La barre de titre indique « modifié, non enregistré ». Partager / Imprimer / Document publient l'état affiché sans toucher à la capture.
+- **Fenêtres dans le Dock et ⌘Tab** tant qu'elles sont ouvertes : éditeur, réglages, lecteur vidéo, générateur de documents, résultat OCR/QR. L'agent reste dans la barre des menus ; l'espace de travail reste un panneau sous l'icône.
+- **Flèches, pastilles, bulles** : on appuie sur ce qu'on montre et on glisse vers le départ.
+- **Snappy rouvert depuis le Finder** alors qu'il tourne : l'espace de travail s'affiche.
+- **Aperçus rendus** (préréglages, favoris, variantes) et **panneau de tampons** (Classique en couleur, Réactions, Souris, Texte, Mes tampons).
+- Note : l'icône de la barre des menus était masquée par **Ice** (gestionnaire de barre des menus) : la déplacer dans sa section visible.

@@ -51,6 +51,7 @@ pub fn run(store: Store) -> Result<()> {
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
+            platform::show_in_dock();
             platform::activate(cc);
             let ctx = cc.egui_ctx.clone();
             Ok(Box::new(Settings::new(store, move || {

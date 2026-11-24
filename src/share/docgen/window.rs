@@ -48,6 +48,7 @@ pub fn run(store: Store, paths: Vec<PathBuf>) -> Result<()> {
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
+            crate::platform::show_in_dock();
             crate::platform::activate(cc);
             Ok(Box::new(DocWindow::new(store, paths, &cc.egui_ctx)))
         }),

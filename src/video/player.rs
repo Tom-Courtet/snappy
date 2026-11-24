@@ -66,6 +66,7 @@ pub fn run(store: Store, path: PathBuf) -> Result<()> {
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
+            platform::show_in_dock();
             platform::activate(cc);
             let ctx = cc.egui_ctx.clone();
             let frames = FrameWorker::spawn(path.clone(), move || ctx.request_repaint())?;

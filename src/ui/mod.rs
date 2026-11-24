@@ -23,6 +23,7 @@ mod tests {
         ("editor/preview.rs", include_str!("../editor/preview.rs")),
         ("editor/extras.rs", include_str!("../editor/extras.rs")),
         ("editor/links.rs", include_str!("../editor/links.rs")),
+        ("editor/unsaved.rs", include_str!("../editor/unsaved.rs")),
         ("render.rs", include_str!("../render.rs")),
         // Lot « Aperçus et tampons » (`emoji.rs` n'y est pas : ses émojis sont
         // toujours dessinés en images, jamais par egui).

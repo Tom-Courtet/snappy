@@ -35,6 +35,7 @@ pub fn run(outcome: Outcome) -> Result<()> {
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
+            platform::show_in_dock();
             platform::activate(cc);
             Ok(Box::new(ResultWindow::new(outcome)))
         }),

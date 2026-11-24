@@ -77,6 +77,15 @@ pub fn activate(window: &impl HasWindowHandle) {
     let _ = window;
 }
 
+/// macOS : icône dans le Dock et place dans ⌘Tab tant que cette fenêtre (ce
+/// processus) est ouverte. Snappy est une app de barre des menus (`LSUIElement`) :
+/// sans cet appel, ses fenêtres n'y apparaissent pas et sont difficiles à retrouver.
+/// L'icône disparaît avec le processus, à la fermeture de la fenêtre.
+pub fn show_in_dock() {
+    #[cfg(target_os = "macos")]
+    macos::show_in_dock();
+}
+
 /// Autorise les processus lancés ensuite (la capture) à passer au premier plan.
 /// Windows ne le permet qu'au processus qui a reçu la dernière entrée : ici l'agent,
 /// qui vient de recevoir le raccourci.
@@ -190,6 +199,14 @@ mod macos {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     use super::{ScreenRect, cg_to_appkit};
+
+    pub fn show_in_dock() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        NSApplication::sharedApplication(mtm)
+            .setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Regular);
+    }
 
     fn ns_window(window: &impl HasWindowHandle) -> Option<Retained<NSWindow>> {
         let handle = window.window_handle().ok()?;

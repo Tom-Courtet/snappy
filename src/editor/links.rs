@@ -127,16 +127,35 @@ impl Editor {
     fn publish(&mut self, how: Publish) {
         self.commit_text();
         self.finish_polygon();
-        if let Err(e) = history::save_doc(&self.path, &self.doc) {
-            self.say(format!("{} {e:#}", icons::WARNING));
-            return;
-        }
-        let paths = [self.path.clone()];
+        // Modifications non enregistrées : on publie l'image telle qu'à l'écran, via
+        // une copie temporaire, sans toucher à la capture.
+        let path = if self.is_dirty() {
+            let dir = std::env::temp_dir().join("snappy-partage");
+            let stem = self
+                .path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("capture")
+                .to_owned();
+            let file = dir.join(format!("{stem}.png"));
+            let img = self.flattened();
+            let written = std::fs::create_dir_all(&dir)
+                .map_err(anyhow::Error::from)
+                .and_then(|()| history::write_png(&file, &img));
+            if let Err(e) = written {
+                self.say(format!("{} {e:#}", icons::WARNING));
+                return;
+            }
+            file
+        } else {
+            self.path.clone()
+        };
+        let paths = [path.clone()];
         let result = match how {
             Publish::Share => crate::share::share_sheet(&paths).map(|d| d.message()),
             Publish::Mail => crate::share::email(&paths).map(|d| d.message()),
             Publish::Print => crate::share::print(
-                &self.path,
+                &path,
                 crate::share::PrintOptions {
                     file_name: true,
                     ..Default::default()

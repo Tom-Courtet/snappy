@@ -883,7 +883,7 @@ impl Editor {
         };
         let target = here as i64 + i64::from(delta);
         match usize::try_from(target).ok().and_then(|i| all.get(i)) {
-            Some(path) => self.open_image(ctx, path.clone()),
+            Some(path) => self.request_open(ctx, path.clone()),
             None => self.say(if delta < 0 {
                 "Première image"
             } else {
@@ -904,6 +904,8 @@ impl Editor {
             }
         };
         self.doc = history::load_doc(&path);
+        self.saved_doc = self.doc.clone();
+        self.ask_save = None;
         self.base = base;
         self.path = path;
         self.undo.clear();
@@ -935,7 +937,7 @@ impl Editor {
             dialog = dialog.set_directory(dir);
         }
         if let Some(path) = dialog.pick_file() {
-            self.open_image(ctx, path);
+            self.request_open(ctx, path);
         }
     }
 
@@ -970,7 +972,7 @@ impl Editor {
                 self.open_image(ctx, next);
                 self.say(format!("{} Image mise à la corbeille", icons::DELETE));
             }
-            None => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            None => self.close_now(ctx),
         }
     }
 
@@ -980,7 +982,7 @@ impl Editor {
     /// et ferme.
     pub(super) fn validate(&mut self, ctx: &egui::Context) {
         let img = self.flattened();
-        if let Err(e) = history::save_doc(&self.path, &self.doc) {
+        if let Err(e) = self.save_capture() {
             self.say(format!("{} {e:#}", icons::WARNING));
             return;
         }
@@ -994,7 +996,7 @@ impl Editor {
         match result {
             Ok(()) => {
                 self.save_prefs();
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.close_now(ctx);
             }
             Err(e) => self.say(format!("{} {e:#}", icons::WARNING)),
         }
@@ -1190,6 +1192,13 @@ impl Editor {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             ui.label(RichText::new(name).color(theme::TEXT_DIM));
+            if self.is_dirty() {
+                ui.label(RichText::new("·  modifié, non enregistré").color(theme::TEXT_DIM))
+                    .on_hover_text(
+                        "« Valider » enregistre sur la capture ; à la fermeture, Snappy \
+                         propose d'enregistrer ou d'enregistrer une copie",
+                    );
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.menu_button(RichText::new("…").size(theme::SIZE_L), |ui| {
                     self.more_menu(ui, &ctx);
