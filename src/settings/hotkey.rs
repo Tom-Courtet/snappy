@@ -274,6 +274,64 @@ pub fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
+// --- Lot « Réglages, raccourcis, après capture » ---
+
+/// Icône d'une action dans la liste des raccourcis. Les trois actions d'origine
+/// gardent la leur. Les autres prennent, en attendant leur glyphe dans la police,
+/// l'icône déjà présente la plus proche ; icônes Lucide visées : `app-window`
+/// (fenêtre), `timer` (différée), `scroll-text` (défilement), `scan-text` (OCR),
+/// `qr-code`, `video`, `square-dashed` ou `scan-line` (zone vidéo), `layout-grid`
+/// (espace de travail), `monitor-smartphone` (tous les écrans).
+pub fn mode_icon(mode: Mode) -> &'static str {
+    use crate::ui::icons;
+    match mode {
+        Mode::Region => icons::REGION,
+        Mode::Screen => icons::SCREEN,
+        Mode::Previous => icons::CROP,
+        Mode::AllScreens => icons::FIT,
+        Mode::Window => icons::ROUNDED,
+        Mode::Delayed => icons::STAMP_ALERT,
+        Mode::Scrolling => icons::SHADOW,
+        Mode::Ocr => icons::TEXT,
+        Mode::Qr => icons::PIXELATE,
+        Mode::ColorPicker => icons::PIPETTE,
+        Mode::Video | Mode::VideoRegion => icons::SPOTLIGHT,
+        Mode::Workspace => icons::IMAGE,
+    }
+}
+
+/// Groupes de la liste des raccourcis (titre, actions), dans l'ordre de
+/// [`MODES`] : capture d'image, outils, vidéo, application.
+pub fn mode_groups() -> [(&'static str, Vec<Mode>); 4] {
+    let group = |pred: fn(Mode) -> bool| MODES.into_iter().filter(|&m| pred(m)).collect();
+    [
+        (
+            "Capture d'image",
+            group(|m| {
+                matches!(
+                    m,
+                    Mode::Region
+                        | Mode::Previous
+                        | Mode::Screen
+                        | Mode::AllScreens
+                        | Mode::Window
+                        | Mode::Delayed
+                        | Mode::Scrolling
+                )
+            }),
+        ),
+        (
+            "Outils",
+            group(|m| matches!(m, Mode::Ocr | Mode::Qr | Mode::ColorPicker)),
+        ),
+        (
+            "Vidéo",
+            group(|m| matches!(m, Mode::Video | Mode::VideoRegion)),
+        ),
+        ("Application", group(|m| matches!(m, Mode::Workspace))),
+    ]
+}
+
 /// Vérifie `text` comme raccourci de `mode`, face aux autres raccourcis de `config`.
 pub fn validate(text: &str, mode: Mode, config: &Config) -> Result<(), Invalid> {
     let hotkey = HotKey::from_str(text).map_err(|_| Invalid::Unreadable)?;
@@ -651,5 +709,21 @@ mod tests {
             assert_eq!(mods.label(), "Maj+Win+");
         }
         assert_eq!(Mods::default().label(), "");
+    }
+
+    #[test]
+    fn every_action_is_in_exactly_one_group() {
+        let grouped: Vec<Mode> = mode_groups()
+            .into_iter()
+            .flat_map(|(_, modes)| modes)
+            .collect();
+        let mut sorted = grouped.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), MODES.len());
+        assert_eq!(grouped.len(), MODES.len());
+        for mode in MODES {
+            assert!(!mode_icon(mode).is_empty());
+        }
     }
 }

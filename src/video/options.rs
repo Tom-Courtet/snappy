@@ -35,6 +35,9 @@ impl Quality {
         }
         let s = v.as_str()?.trim().to_lowercase();
         Some(match s.as_str() {
+            // Valeurs du réglage « Qualité vidéo » (`config::VideoQuality`).
+            "very_low" => Self::Low,
+            "normal" | "very_high" | "max" => Self::High,
             "low" | "basse" | "faible" => Self::Low,
             "medium" | "moyenne" | "normale" => Self::Medium,
             "high" | "haute" | "élevée" | "elevee" | "ultra" | "best" => Self::High,
@@ -139,6 +142,17 @@ impl VideoOptions {
                 .find_map(|k| get(k).and_then(Quality::parse))
                 .unwrap_or(d.quality),
             fps: number(&["fps", "frame_rate", "framerate"])
+                .or_else(|| {
+                    // Images par seconde du réglage « Qualité vidéo », comme Screenpresso.
+                    let q = get("quality")?.as_str()?;
+                    Some(match q {
+                        "very_low" => 12,
+                        "low" => 15,
+                        "normal" => 30,
+                        "high" | "very_high" | "max" => 60,
+                        _ => return None,
+                    })
+                })
                 .map(|n| n.clamp(*Self::FPS_RANGE.start(), *Self::FPS_RANGE.end()))
                 .unwrap_or(d.fps),
             microphone: flag(&["microphone", "mic", "record_microphone"], d.microphone),

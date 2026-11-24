@@ -33,6 +33,8 @@ mod ui;
 mod video;
 mod vision;
 mod workspace;
+// --- Lot « Réglages, raccourcis, après capture » ---
+mod after_capture;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -41,7 +43,6 @@ use anyhow::{Context, Result, bail};
 
 use config::Store;
 use ipc::{Mode, Request};
-use overlay::Outcome;
 
 const USAGE: &str = "\
 Snappy : capture d'écran légère, annotations non destructives.
@@ -197,9 +198,11 @@ fn run_capture(store: Store, mode: Mode) -> Result<()> {
     }
     let config = store.load();
     let capture = capture::capture_all()?;
+    // Jetons {title} et {app} des noms de fichiers.
+    history::set_name_context(history::NameContext::from_capture(&capture));
     match mode {
         // Le délai de la capture différée est compté par l'agent.
-        Mode::Region | Mode::Delayed => region(store, capture, config.capture_cursor),
+        Mode::Region | Mode::Delayed => region(store, capture, &config),
         Mode::AllScreens | Mode::Window | Mode::ColorPicker => {
             capture_modes::run(store, mode, capture)
         }
@@ -209,35 +212,42 @@ fn run_capture(store: Store, mode: Mode) -> Result<()> {
         Mode::Workspace => workspace::run(store),
         Mode::Previous => match previous_region(&store, &capture, config.capture_cursor) {
             Some(img) => {
-                history::save_capture(&store.captures_dir(), &img)?;
-                history::copy_image(&img)
+                let path = history::save_capture(&store.captures_dir(), &img)?;
+                // Par défaut : l'image copiée, rien d'autre.
+                after_capture::auto(store, &config, &img, &path, after_capture::Usual::Copy)
             }
             // Pas encore de zone précédente (ou écran changé) : sélection normale.
-            None => region(store, capture, config.capture_cursor),
+            None => region(store, capture, &config),
         },
         Mode::Screen => {
             let shot = &capture.shots[capture.active];
             let (w, h) = shot.image.dimensions();
             let img = shot.region(0, 0, w, h, config.capture_cursor);
             let path = history::save_capture(&store.captures_dir(), &img)?;
-            if let Err(e) = history::copy_image(&img) {
-                log::warn!("{e:#}");
-            }
-            editor::run(store, path)
+            // Par défaut : l'image copiée, puis l'éditeur.
+            after_capture::auto(
+                store,
+                &config,
+                &img,
+                &path,
+                after_capture::Usual::CopyAndEdit,
+            )
         }
     }
 }
 
 /// Sélection de zone sur les écrans figés, puis l'action choisie.
-fn region(store: Store, capture: capture::Capture, with_cursor: bool) -> Result<()> {
-    match overlay::run(store, capture, with_cursor)? {
-        Outcome::Edit(path) => open_editor(&path),
-        Outcome::Saved(path) => {
-            log::info!("enregistré : {}", path.display());
-            Ok(())
-        }
-        Outcome::Copied | Outcome::Cancelled => Ok(()),
-    }
+///
+/// Par défaut, comme avant : « Annoter » ouvre l'éditeur, rien après « Copier » ni
+/// « Enregistrer » (voir [`after_capture::after_overlay`] pour les réglages).
+fn region(store: Store, capture: capture::Capture, config: &config::Config) -> Result<()> {
+    let options = overlay::Options {
+        with_cursor: config.capture_cursor,
+        capture_context: config.capture_context,
+        ..overlay::Options::default()
+    };
+    let outcome = overlay::run_with(store.clone(), capture, options)?;
+    after_capture::after_overlay(&store, outcome)
 }
 
 /// La zone de la capture précédente, sur le même écran s'il a toujours la même

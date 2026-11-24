@@ -8,9 +8,6 @@
 //!   la sélection de zone habituelle.
 //! - `Mode::ColorPicker` : la surcouche en pipette ; un clic copie la couleur.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
 use anyhow::{Context, Result, bail};
 use image::RgbaImage;
 
@@ -19,13 +16,15 @@ use crate::config::Store;
 use crate::history;
 use crate::ipc::Mode;
 use crate::model::CaptureContext;
-use crate::overlay::{self, Options, Outcome};
+use crate::overlay::{self, Options};
 
 /// `Mode::AllScreens`, `Mode::Window` ou `Mode::ColorPicker`, avec le curseur selon
 /// le réglage `capture_cursor` et les autres options par défaut.
 pub fn run(store: Store, mode: Mode, capture: Capture) -> Result<()> {
+    let config = store.load();
     let options = Options {
-        with_cursor: store.load().capture_cursor,
+        with_cursor: config.capture_cursor,
+        capture_context: config.capture_context,
         ..Options::default()
     };
     run_with(store, mode, capture, options)
@@ -67,14 +66,8 @@ fn window(store: Store, capture: Capture, options: Options) -> Result<()> {
         }
         None => {
             log::info!("aucune fenêtre au premier plan : sélection de zone");
-            match overlay::run_with(store, capture, options)? {
-                Outcome::Edit(path) => spawn_editor(&path),
-                Outcome::Saved(path) => {
-                    log::info!("enregistré : {}", path.display());
-                    Ok(())
-                }
-                Outcome::Copied | Outcome::Cancelled => Ok(()),
-            }
+            let outcome = overlay::run_with(store.clone(), capture, options)?;
+            crate::after_capture::after_overlay(&store, outcome)
         }
     }
 }
@@ -88,22 +81,16 @@ fn open_in_editor(store: Store, img: &RgbaImage, context: Option<CaptureContext>
     {
         log::warn!("contexte de la capture : {e:#}");
     }
-    if let Err(e) = history::copy_image(img) {
-        log::warn!("{e:#}");
-    }
-    crate::editor::run(store, path)
-}
-
-/// L'éditeur dans un nouveau processus : une fenêtre egui ne peut être ouverte
-/// qu'une fois par processus sous macOS, et la surcouche vient de se fermer.
-fn spawn_editor(path: &Path) -> Result<()> {
-    let exe: PathBuf = std::env::current_exe().context("chemin de l'exécutable")?;
-    Command::new(exe)
-        .arg("--edit")
-        .arg(path)
-        .spawn()
-        .context("lancement de l'éditeur")?;
-    Ok(())
+    // Comme l'écran entier : réglages « Ensuite » et presse-papiers (par défaut,
+    // l'image copiée puis l'éditeur).
+    let config = store.load();
+    crate::after_capture::auto(
+        store,
+        &config,
+        img,
+        &path,
+        crate::after_capture::Usual::CopyAndEdit,
+    )
 }
 
 #[cfg(test)]

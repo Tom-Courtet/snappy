@@ -7,6 +7,8 @@
 
 mod hotkey;
 mod link;
+// --- Lot « Réglages, raccourcis, après capture » ---
+mod login;
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -14,7 +16,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use egui::{Align, Event, Frame, Layout, Margin, RichText, Stroke, Ui};
 
-use crate::agent::hotkeys::{MODES, label_of};
+use crate::agent::hotkeys::label_of;
+use crate::config::{AfterCapture, ClipboardContent, Corner, FileName, ImageFormat, VideoQuality};
 use crate::config::{Config, DEFAULT_HOTKEYS, Store};
 use crate::history;
 use crate::ipc::{self, Mode};
@@ -81,12 +84,59 @@ struct Recording {
     renewed: Instant,
 }
 
+/// Onglets de la fenêtre.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    General,
+    Capture,
+    Video,
+    Hotkeys,
+    Advanced,
+}
+
+impl Tab {
+    const ALL: [Self; 5] = [
+        Self::General,
+        Self::Capture,
+        Self::Video,
+        Self::Hotkeys,
+        Self::Advanced,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::General => "Général",
+            Self::Capture => "Capture",
+            Self::Video => "Vidéo",
+            Self::Hotkeys => "Raccourcis",
+            Self::Advanced => "Avancé",
+        }
+    }
+}
+
+/// Action à confirmer dans une fenêtre modale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Confirm {
+    RestoreHotkeys,
+    RestoreSettings,
+}
+
 struct Settings {
     store: Store,
     config: Config,
     agent: Agent,
     recording: Option<Recording>,
     status: Option<(String, Instant)>,
+    // --- Lot « Réglages, raccourcis, après capture » ---
+    tab: Tab,
+    /// Modèle de nom en cours de saisie (enregistré seulement s'il est valide).
+    template: String,
+    /// Textes en cours de saisie, enregistrés à la sortie du champ.
+    watermark_text: String,
+    mic_device: String,
+    confirm: Option<Confirm>,
+    /// Lancement à l'ouverture de session, tel que le système le voit.
+    login: login::State,
 }
 
 impl Settings {
@@ -95,12 +145,23 @@ impl Settings {
         let agent = Agent::new(store.socket_path(), repaint);
         // Raccourcis refusés dès l'ouverture, et présence de l'agent.
         agent.send(Command::Reload);
+        let template = match &config.file_name {
+            FileName::Custom(t) => t.clone(),
+            _ => "snappy-{date}".into(),
+        };
         Self {
+            watermark_text: config.watermark.text.clone(),
+            mic_device: config.video.mic_device.clone(),
+            template,
             store,
             config,
             agent,
             recording: None,
             status: None,
+            // La liste des raccourcis reste la première vue, comme avant les onglets.
+            tab: Tab::Hotkeys,
+            confirm: None,
+            login: login::state(),
         }
     }
 
@@ -208,15 +269,37 @@ impl Settings {
                 "Actifs partout, même quand Snappy n'est pas au premier plan.",
             );
             ui.add_space(4.0);
-            for (i, mode) in MODES.into_iter().enumerate() {
-                if i > 0 {
-                    ui.separator();
+            for (g, (title, modes)) in hotkey::mode_groups().into_iter().enumerate() {
+                // Les 13 actions, par groupe.
+                ui.add_space(if g > 0 { 10.0 } else { 2.0 });
+                ui.label(
+                    RichText::new(title.to_uppercase())
+                        .size(theme::SIZE_S)
+                        .color(theme::TEXT_DIM),
+                );
+                for (i, mode) in modes.into_iter().enumerate() {
+                    if i > 0 {
+                        ui.separator();
+                    }
+                    let refusal = refused
+                        .iter()
+                        .find(|r| r.mode == mode && r.hotkey == self.config.hotkey(mode))
+                        .map(|r| r.reason.clone());
+                    self.hotkey_row(ui, mode, refusal);
                 }
-                let refusal = refused
-                    .iter()
-                    .find(|r| r.mode == mode && r.hotkey == self.config.hotkey(mode))
-                    .map(|r| r.reason.clone());
-                self.hotkey_row(ui, mode, refusal);
+            }
+            ui.add_space(12.0);
+            let restore = ui
+                .add_enabled(
+                    self.recording.is_none(),
+                    egui::Button::new(format!(
+                        "{} Restaurer les raccourcis par défaut",
+                        icons::UNDO
+                    )),
+                )
+                .on_hover_text("Les trois raccourcis d'origine ; aucun pour les autres actions");
+            if restore.clicked() {
+                self.confirm = Some(Confirm::RestoreHotkeys);
             }
         });
     }
@@ -230,12 +313,7 @@ impl Settings {
 
         ui.horizontal(|ui| {
             ui.set_min_height(32.0);
-            let icon = match mode {
-                Mode::Region => icons::REGION,
-                Mode::Screen => icons::SCREEN,
-                Mode::Previous => icons::CROP,
-                _ => icons::REGION,
-            };
+            let icon = hotkey::mode_icon(mode);
             ui.label(
                 RichText::new(icon)
                     .size(theme::SIZE_L)
@@ -459,6 +537,618 @@ impl Settings {
         }
     }
 
+    // --- Lot « Réglages, raccourcis, après capture » -----------------------------
+
+    fn general_tab(&mut self, ui: &mut Ui) {
+        section(ui, icons::SETTINGS, "Général", |ui| {
+            let mut on = self.config.launch_at_login;
+            let available = !matches!(self.login, login::State::Unavailable(_));
+            let label = if cfg!(windows) {
+                "Lancer Snappy au démarrage de Windows"
+            } else {
+                "Lancer Snappy à l'ouverture de session"
+            };
+            if ui
+                .add_enabled(available || on, egui::Checkbox::new(&mut on, label))
+                .changed()
+            {
+                self.set_launch_at_login(on);
+            }
+            if let Some(text) = self.login.hint() {
+                hint(ui, &text);
+            }
+            ui.add_space(6.0);
+            if ui
+                .checkbox(
+                    &mut self.config.confirm_delete,
+                    "Demander avant de supprimer une capture",
+                )
+                .changed()
+            {
+                self.save();
+            }
+            hint(ui, "Dans l'espace de travail.");
+        });
+        ui.add_space(12.0);
+        section(ui, icons::FOLDER, "Dossiers", |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .button(format!("{} Dossier des données", icons::FOLDER))
+                    .on_hover_text(self.store.root().display().to_string())
+                    .clicked()
+                {
+                    history::open_dir(self.store.root());
+                }
+                if ui
+                    .button(format!("{} Images enregistrées", icons::FOLDER))
+                    .clicked()
+                {
+                    history::open_dir(&self.store.save_dir(&self.config));
+                }
+            });
+            hint(
+                ui,
+                "Le dossier des données contient les réglages et l'historique des captures.",
+            );
+        });
+    }
+
+    /// Coche ou décoche le lancement à l'ouverture de session : seul moment où
+    /// Snappy y touche.
+    fn set_launch_at_login(&mut self, on: bool) {
+        match login::set(on) {
+            Ok(state) => {
+                let applied = match &state {
+                    login::State::On | login::State::NeedsApproval => on,
+                    login::State::Off => !on,
+                    // Décocher se note toujours (rien n'a pu être inscrit ici).
+                    login::State::Unavailable(_) => !on,
+                };
+                self.login = state;
+                if applied {
+                    self.config.launch_at_login = on;
+                    self.save();
+                } else if let Some(text) = self.login.hint() {
+                    self.say(format!("{} {text}", icons::WARNING));
+                }
+            }
+            Err(e) => {
+                self.login = login::state();
+                self.say(format!("{} {e:#}", icons::WARNING));
+            }
+        }
+    }
+
+    fn capture_tab(&mut self, ui: &mut Ui) {
+        // Les deux sections d'origine, telles quelles.
+        self.capture_section(ui);
+        ui.add_space(12.0);
+        self.save_section(ui);
+        ui.add_space(12.0);
+        self.file_section(ui);
+        ui.add_space(12.0);
+        self.after_section(ui);
+        ui.add_space(12.0);
+        self.watermark_section(ui);
+        ui.add_space(12.0);
+        self.tools_section(ui);
+    }
+
+    fn file_section(&mut self, ui: &mut Ui) {
+        section(ui, icons::IMAGE, "Fichiers", |ui| {
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label("Format des images enregistrées");
+                changed |= combo(
+                    ui,
+                    "image_format",
+                    &mut self.config.image_format,
+                    &ImageFormat::ALL,
+                    ImageFormat::label,
+                );
+            });
+            if self.config.image_format == ImageFormat::Jpeg {
+                ui.horizontal(|ui| {
+                    ui.label("Qualité JPEG");
+                    let mut q = self.config.jpeg_quality();
+                    if ui.add(egui::Slider::new(&mut q, 1..=100)).changed() {
+                        self.config.jpeg_quality = q;
+                        changed = true;
+                    }
+                });
+            }
+            hint(
+                ui,
+                "Pour « Enregistrer » (surcouche et éditeur). L'historique reste en PNG.",
+            );
+            ui.add_space(6.0);
+
+            ui.horizontal(|ui| {
+                ui.label("Nom des fichiers");
+                let current = match self.config.file_name {
+                    FileName::Date => 0,
+                    FileName::Counter => 1,
+                    FileName::Custom(_) => 2,
+                };
+                let names = ["Date (par défaut)", "Numérotation", "Personnalisé"];
+                let mut choice = current;
+                egui::ComboBox::from_id_salt("file_name")
+                    .selected_text(names[current])
+                    .show_ui(ui, |ui| {
+                        for (i, name) in names.iter().enumerate() {
+                            ui.selectable_value(&mut choice, i, *name);
+                        }
+                    });
+                if choice != current {
+                    self.config.file_name = match choice {
+                        0 => FileName::Date,
+                        1 => FileName::Counter,
+                        _ if history::check_template(&self.template).is_ok() => {
+                            FileName::Custom(self.template.clone())
+                        }
+                        _ => FileName::Custom("snappy-{date}".into()),
+                    };
+                    if let FileName::Custom(t) = &self.config.file_name {
+                        self.template = t.clone();
+                    }
+                    changed = true;
+                }
+            });
+            if matches!(self.config.file_name, FileName::Custom(_)) {
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut self.template)
+                        .hint_text("snappy-{date}")
+                        .desired_width(f32::INFINITY),
+                );
+                match history::check_template(&self.template) {
+                    Ok(()) => {
+                        if edit.changed() {
+                            self.config.file_name = FileName::Custom(self.template.clone());
+                        }
+                        if edit.lost_focus() {
+                            changed = true;
+                        }
+                    }
+                    Err(e) => {
+                        ui.label(
+                            RichText::new(format!("{} {e}", icons::WARNING))
+                                .size(theme::SIZE_S)
+                                .color(theme::WARNING),
+                        );
+                    }
+                }
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                    for (token, meaning) in history::TOKENS {
+                        if ui.small_button(*token).on_hover_text(*meaning).clicked() {
+                            self.template.push_str(token);
+                            if history::check_template(&self.template).is_ok() {
+                                self.config.file_name = FileName::Custom(self.template.clone());
+                                changed = true;
+                            }
+                        }
+                    }
+                });
+            }
+            let example = match (
+                &self.config.file_name,
+                history::check_template(&self.template),
+            ) {
+                (FileName::Custom(_), Err(_)) => None,
+                (FileName::Custom(_), Ok(())) => Some(history::example_name(&FileName::Custom(
+                    self.template.clone(),
+                ))),
+                (rule, _) => Some(history::example_name(rule)),
+            };
+            if let Some(example) = example {
+                hint(
+                    ui,
+                    &format!(
+                        "Exemple : {example}.{} · pour les nouvelles captures",
+                        self.config.image_format.extension()
+                    ),
+                );
+            }
+            if changed {
+                self.save();
+            }
+        });
+    }
+
+    fn after_section(&mut self, ui: &mut Ui) {
+        section(ui, icons::OK, "Après la capture", |ui| {
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label("Copier dans le presse-papiers");
+                changed |= combo(
+                    ui,
+                    "clipboard",
+                    &mut self.config.clipboard,
+                    &ClipboardContent::ALL,
+                    ClipboardContent::label,
+                );
+            });
+            hint(
+                ui,
+                match self.config.clipboard {
+                    ClipboardContent::Snappy => {
+                        "L'image après « Copier », l'écran entier et la zone précédente."
+                    }
+                    ClipboardContent::ImageAndPath => {
+                        "Les éditeurs d'images collent l'image, le Finder colle le fichier."
+                    }
+                    ClipboardContent::Image => "L'image, après chaque capture.",
+                    ClipboardContent::Path => "Le chemin du fichier, en texte.",
+                    ClipboardContent::Nothing => {
+                        "Rien, sauf avec le bouton « Copier » de la sélection."
+                    }
+                },
+            );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Ensuite");
+                changed |= combo(
+                    ui,
+                    "after_capture",
+                    &mut self.config.after_capture,
+                    &AfterCapture::ALL,
+                    AfterCapture::label,
+                );
+            });
+            hint(
+                ui,
+                match self.config.after_capture {
+                    AfterCapture::Snappy => {
+                        "L'éditeur après la capture de l'écran entier, rien après les autres. \
+                         L'espace de travail ne s'ouvre pas tout seul."
+                    }
+                    AfterCapture::Workspace => "L'espace de travail s'ouvre après chaque capture.",
+                    AfterCapture::Editor => "L'éditeur s'ouvre après chaque capture.",
+                    AfterCapture::Notify => "Une notification indique le fichier enregistré.",
+                    AfterCapture::Nothing => {
+                        "Rien, même après la capture de l'écran entier (« Annoter » ouvre toujours \
+                         l'éditeur)."
+                    }
+                },
+            );
+            ui.add_space(6.0);
+            changed |= ui
+                .checkbox(
+                    &mut self.config.countdown_before_capture,
+                    "Afficher un compte à rebours avant la capture",
+                )
+                .changed();
+            changed |= ui
+                .checkbox(
+                    &mut self.config.capture_context,
+                    "Garder le contexte de la capture (fenêtre, application)",
+                )
+                .changed();
+            if changed {
+                self.save();
+            }
+        });
+    }
+
+    fn watermark_section(&mut self, ui: &mut Ui) {
+        section(ui, icons::STAMP, "Filigrane", |ui| {
+            let mut changed = ui
+                .checkbox(
+                    &mut self.config.watermark.enabled,
+                    "Ajouter un filigrane aux captures",
+                )
+                .changed();
+            hint(
+                ui,
+                "Un texte ajouté comme annotation : il se modifie ou se supprime dans l'éditeur.",
+            );
+            ui.add_enabled_ui(self.config.watermark.enabled, |ui| {
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut self.watermark_text)
+                        .hint_text("© Mon nom")
+                        .desired_width(f32::INFINITY),
+                );
+                if edit.lost_focus() && self.watermark_text != self.config.watermark.text {
+                    self.config.watermark.text = self.watermark_text.clone();
+                    changed = true;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Position");
+                    changed |= combo(
+                        ui,
+                        "watermark_position",
+                        &mut self.config.watermark.position,
+                        &Corner::ALL,
+                        Corner::label,
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Opacité");
+                    let mut opacity = self.config.watermark.opacity.min(100);
+                    if ui
+                        .add(egui::Slider::new(&mut opacity, 10..=100).suffix(" %"))
+                        .changed()
+                    {
+                        self.config.watermark.opacity = opacity;
+                        changed = true;
+                    }
+                });
+            });
+            if changed {
+                self.save();
+            }
+        });
+    }
+
+    fn tools_section(&mut self, ui: &mut Ui) {
+        section(ui, icons::TEXT, "Texte et QR codes", |ui| {
+            let mut changed = ui
+                .checkbox(
+                    &mut self.config.ocr_copy_without_window,
+                    "OCR : copier le texte directement, sans fenêtre",
+                )
+                .changed();
+            changed |= ui
+                .checkbox(
+                    &mut self.config.qr_open_browser,
+                    "QR code : ouvrir les liens dans le navigateur",
+                )
+                .changed();
+            if changed {
+                self.save();
+            }
+        });
+    }
+
+    fn video_tab(&mut self, ui: &mut Ui) {
+        section(ui, icons::SPOTLIGHT, "Vidéo", |ui| {
+            hint(ui, "Utilisé par l'enregistrement vidéo.");
+            ui.add_space(4.0);
+            let video = &mut self.config.video;
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label("Qualité");
+                changed |= combo(
+                    ui,
+                    "video_quality",
+                    &mut video.quality,
+                    &VideoQuality::ALL,
+                    VideoQuality::label,
+                );
+            });
+            ui.horizontal(|ui| {
+                let mut stop = video.stop_after_minutes.is_some();
+                if ui
+                    .checkbox(&mut stop, "Arrêter l'enregistrement après")
+                    .changed()
+                {
+                    video.stop_after_minutes = stop.then_some(10);
+                    changed = true;
+                }
+                if let Some(minutes) = &mut video.stop_after_minutes {
+                    changed |= ui
+                        .add(egui::DragValue::new(minutes).range(1..=600).suffix(" min"))
+                        .changed();
+                }
+            });
+            changed |= ui
+                .checkbox(
+                    &mut video.countdown,
+                    "Compte à rebours avant l'enregistrement",
+                )
+                .changed();
+            ui.add_space(6.0);
+            changed |= ui
+                .checkbox(&mut video.mic, "Enregistrer le micro")
+                .changed();
+            let mic = video.mic;
+            changed |= ui
+                .checkbox(
+                    &mut video.system_audio,
+                    "Enregistrer le son de l'ordinateur",
+                )
+                .changed();
+            changed |= ui
+                .checkbox(&mut video.highlight_cursor, "Entourer le pointeur")
+                .changed();
+            changed |= ui
+                .checkbox(&mut video.mark_clicks, "Marquer les clics")
+                .changed();
+            changed |= ui
+                .checkbox(&mut video.webcam, "Incruster la webcam")
+                .changed();
+            changed |= ui
+                .checkbox(
+                    &mut video.show_preview_after,
+                    "Ouvrir la vidéo après l'enregistrement",
+                )
+                .changed();
+            ui.add_enabled_ui(mic, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Micro");
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut self.mic_device)
+                            .hint_text("celui du système")
+                            .desired_width(f32::INFINITY),
+                    );
+                    if edit.lost_focus() && self.mic_device != self.config.video.mic_device {
+                        self.config.video.mic_device = self.mic_device.trim().to_owned();
+                        changed = true;
+                    }
+                });
+            });
+            if changed {
+                self.save();
+            }
+        });
+    }
+
+    fn advanced_tab(&mut self, ui: &mut Ui) {
+        section(ui, icons::SETTINGS, "Avancé", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .button(format!("{} Exporter les réglages…", icons::SAVE))
+                    .clicked()
+                {
+                    self.export_settings();
+                }
+                if ui
+                    .button(format!("{} Importer les réglages…", icons::OPEN))
+                    .clicked()
+                {
+                    self.import_settings();
+                }
+            });
+            hint(
+                ui,
+                "Un fichier JSON, pour une autre machine ou une sauvegarde.",
+            );
+            ui.add_space(6.0);
+            if ui
+                .button(format!("{} Restaurer les réglages par défaut", icons::UNDO))
+                .clicked()
+            {
+                self.confirm = Some(Confirm::RestoreSettings);
+            }
+            ui.add_space(6.0);
+            if ui
+                .button(format!("{} Ouvrir le dossier des données", icons::FOLDER))
+                .on_hover_text(self.store.root().display().to_string())
+                .clicked()
+            {
+                history::open_dir(self.store.root());
+            }
+            hint(ui, &self.store.config_path().display().to_string());
+        });
+    }
+
+    fn export_settings(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Exporter les réglages")
+            .set_file_name("snappy-reglages.json")
+            .add_filter("JSON", &["json"])
+            .save_file()
+        else {
+            return;
+        };
+        let result = serde_json::to_string_pretty(&self.config)
+            .map_err(anyhow::Error::from)
+            .and_then(|text| crate::config::write_atomic(&path, text.as_bytes()));
+        match result {
+            Ok(()) => self.say(format!("{} Réglages exportés", icons::OK)),
+            Err(e) => self.say(format!("{} {e:#}", icons::WARNING)),
+        }
+    }
+
+    fn import_settings(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Importer les réglages")
+            .add_filter("JSON", &["json"])
+            .pick_file()
+        else {
+            return;
+        };
+        let parsed = std::fs::read_to_string(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|text| Ok(serde_json::from_str::<Config>(&text)?));
+        match parsed {
+            Ok(config) => {
+                self.replace_config(config);
+                self.say(format!("{} Réglages importés", icons::OK));
+            }
+            Err(e) => self.say(format!("{} Fichier illisible : {e:#}", icons::WARNING)),
+        }
+    }
+
+    /// Nouvelle config entière (import, réglages par défaut). Le lancement à
+    /// l'ouverture de session ne change pas : il ne bouge que par sa case.
+    fn replace_config(&mut self, mut config: Config) {
+        config.launch_at_login = self.config.launch_at_login;
+        self.config = config;
+        self.watermark_text = self.config.watermark.text.clone();
+        self.mic_device = self.config.video.mic_device.clone();
+        if let FileName::Custom(t) = &self.config.file_name {
+            self.template = t.clone();
+        }
+        self.save();
+    }
+
+    /// Fenêtre de confirmation, si une action en attend une.
+    fn confirm_dialog(&mut self, ctx: &egui::Context) {
+        let Some(confirm) = self.confirm else { return };
+        let (title, text, action) = match confirm {
+            Confirm::RestoreHotkeys => (
+                "Restaurer les raccourcis par défaut ?",
+                "Les trois raccourcis d'origine reviennent ; les autres actions n'ont plus de \
+                 raccourci.",
+                "Restaurer",
+            ),
+            Confirm::RestoreSettings => (
+                "Restaurer les réglages par défaut ?",
+                "Tous les réglages reviennent à leur valeur d'origine, raccourcis compris. \
+                 Les captures ne sont pas touchées.",
+                "Restaurer",
+            ),
+        };
+        let mut answer = None;
+        let modal = egui::Modal::new(egui::Id::unique("snappy-confirmation")).show(ctx, |ui| {
+            ui.set_max_width(380.0);
+            ui.label(RichText::new(title).bold().size(theme::SIZE_L));
+            ui.add_space(4.0);
+            ui.label(text);
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button(action).clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Annuler").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        if modal.should_close() && answer.is_none() {
+            answer = Some(false);
+        }
+        match answer {
+            Some(true) => {
+                self.confirm = None;
+                match confirm {
+                    Confirm::RestoreHotkeys => {
+                        self.config.restore_default_hotkeys();
+                        self.save();
+                    }
+                    Confirm::RestoreSettings => self.replace_config(Config::default()),
+                }
+            }
+            Some(false) => self.confirm = None,
+            None => {}
+        }
+    }
+
+    fn tab_bar(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for tab in Tab::ALL {
+                let selected = self.tab == tab;
+                let text = RichText::new(tab.label()).size(theme::SIZE_M);
+                let text = if selected {
+                    text.color(theme::ACCENT_2).strong()
+                } else {
+                    text
+                };
+                if ui
+                    .add_enabled(
+                        self.recording.is_none() || selected,
+                        egui::Button::selectable(selected, text),
+                    )
+                    .clicked()
+                {
+                    self.tab = tab;
+                }
+            }
+        });
+    }
+
     // --- Barres -----------------------------------------------------------------
 
     fn header(&self, ui: &mut Ui) {
@@ -517,6 +1207,20 @@ impl Settings {
 
 impl eframe::App for Settings {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.draw(ui);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Fermée pendant un enregistrement : les raccourcis reviennent tout de suite.
+        if self.recording.take().is_some() {
+            self.agent.reload_now();
+        }
+    }
+}
+
+impl Settings {
+    /// Toute la fenêtre (une frame).
+    fn draw(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.read_keyboard(&ctx);
         let agent = self.agent.status();
@@ -526,7 +1230,11 @@ impl eframe::App for Settings {
                     .fill(theme::SURFACE)
                     .inner_margin(Margin::symmetric(16, 12)),
             )
-            .show(ui, |ui| self.header(ui));
+            .show(ui, |ui| {
+                self.header(ui);
+                ui.add_space(8.0);
+                self.tab_bar(ui);
+            });
         egui::Panel::bottom("status")
             .frame(
                 Frame::new()
@@ -540,21 +1248,16 @@ impl eframe::App for Settings {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        self.hotkeys_section(ui, &agent.refused);
-                        ui.add_space(12.0);
-                        self.capture_section(ui);
-                        ui.add_space(12.0);
-                        self.save_section(ui);
+                    .id_salt(self.tab.label())
+                    .show(ui, |ui| match self.tab {
+                        Tab::General => self.general_tab(ui),
+                        Tab::Capture => self.capture_tab(ui),
+                        Tab::Video => self.video_tab(ui),
+                        Tab::Hotkeys => self.hotkeys_section(ui, &agent.refused),
+                        Tab::Advanced => self.advanced_tab(ui),
                     });
             });
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Fermée pendant un enregistrement : les raccourcis reviennent tout de suite.
-        if self.recording.take().is_some() {
-            self.agent.reload_now();
-        }
+        self.confirm_dialog(&ctx);
     }
 }
 
@@ -629,6 +1332,25 @@ fn section(ui: &mut Ui, icon: &str, title: &str, body: impl FnOnce(&mut Ui)) {
         });
 }
 
+/// Liste déroulante d'une valeur parmi `all` ; `true` si elle a changé.
+fn combo<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id: &str,
+    value: &mut T,
+    all: &[T],
+    label: fn(T) -> &'static str,
+) -> bool {
+    let before = *value;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(label(*value))
+        .show_ui(ui, |ui| {
+            for &option in all {
+                ui.selectable_value(value, option, label(option));
+            }
+        });
+    *value != before
+}
+
 /// Texte d'aide, discret.
 fn hint(ui: &mut Ui, text: &str) {
     ui.label(
@@ -636,4 +1358,37 @@ fn hint(ui: &mut Ui, text: &str) {
             .size(theme::SIZE_S)
             .color(theme::TEXT_DIM),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Chaque onglet et chaque confirmation se dessinent sans paniquer, sans rien
+    /// changer à la config.
+    #[test]
+    fn every_tab_draws() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let mut settings = Settings::new(store.clone(), || {});
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut confirms = [
+            None,
+            Some(Confirm::RestoreHotkeys),
+            Some(Confirm::RestoreSettings),
+        ];
+        for tab in Tab::ALL {
+            for confirm in &mut confirms {
+                settings.tab = tab;
+                settings.confirm = *confirm;
+                for _ in 0..2 {
+                    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| settings.draw(ui));
+                    out.textures_delta.clear();
+                }
+            }
+        }
+        assert_eq!(settings.config, Config::default());
+        assert_eq!(store.load(), Config::default());
+    }
 }

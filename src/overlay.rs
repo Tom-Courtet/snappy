@@ -69,6 +69,7 @@ pub struct Options {
 
 /// Affiche la surcouche sur tous les écrans capturés ; rend le choix de
 /// l'utilisateur. `with_cursor` : curseur inclus au départ (M l'inverse).
+#[allow(dead_code)]
 pub fn run(store: Store, capture: Capture, with_cursor: bool) -> Result<Outcome> {
     run_with(
         store,
