@@ -43,6 +43,26 @@ Screenpresso, avec des annotations **non destructives**.
 - **Ce qu'on voit est ce qu'on exporte** : un seul moteur de rendu (tiny-skia) sert à
   l'écran, au presse-papiers et aux fichiers.
 
+## Ajouts inspirés de Screenpresso
+
+Détail, décisions en attente et limites : [etat-des-lieux.md](etat-des-lieux.md).
+
+- **Icône** : clic gauche → **Espace de travail** (vignettes annotées, recherche,
+  filtres par type et par date, espaces de travail, glisser vers le Finder ou Mail,
+  Publier) ; clic droit → le menu complet.
+- **Nouvelles captures** (raccourci au choix dans les Réglages) : tous les écrans,
+  fenêtre active, **capture avec défilement**, **copier le texte (OCR)**, **QR code**,
+  **pipette**, **vidéo** d'une zone (macOS 15+), capture différée. Dans la sélection :
+  F écran entier, O pipette, D hexadécimal/décimal.
+- **Éditeur** : opacité, pointillés, texte gras/italique/souligné/halo, polygone (G),
+  accolade (J), tampons texte et souris, images insérées, sélection multiple et
+  alignement, préréglages par outil, onglet **Image** (recadrer, pivoter ⌘R, couper une
+  bande, redimensionner, zone de travail, bordures et effets), OCR, flou des données
+  sensibles, suppression de l'arrière-plan, partage, impression, document PDF/HTML/GIF.
+- **Réglages** en onglets : « Ensuite » (que faire après une capture), contenu du
+  presse-papiers, format (PNG, JPEG, WebP…), modèle de nom, démarrage avec la session,
+  filigrane, vidéo. Par défaut, Snappy se comporte comme avant.
+
 ## Très peu de mémoire
 
 Un seul exécutable, plusieurs processus :
@@ -102,6 +122,12 @@ snappy --settings            # la fenêtre des réglages (raccourcis, curseur, d
 snappy --screen              # écran entier, puis l'éditeur
 snappy --edit capture.png    # ouvre une capture dans l'éditeur
 snappy --export capture.png sortie.png   # aplatit capture + annotations, sans fenêtre
+snappy --capture <action>    # region, screen, previous, all-screens, window, delayed,
+                             # scrolling, ocr, qr, color-picker, video, video-region, workspace
+snappy --ocr image.png       # texte d'une image ; --qr pour les QR codes
+snappy --play video.mp4      # lecteur (découpe, vitesse, GIF)
+snappy --share|--mail|--print fichier…   # partage, courriel, impression
+snappy --document a.png b.png            # générateur de documents
 snappy --quit                # arrête l'agent
 ```
 
@@ -129,7 +155,9 @@ Pour essayer avec des données jetables : `SNAPPY_DATA_DIR=/tmp/snappy-essai sna
   peut pas être à cheval sur deux). Plusieurs écrans : pas encore testé en vrai.
 - La détection au survol porte sur les fenêtres, pas encore sur les éléments à
   l'intérieur (boutons, panneaux).
-- Pas encore de capture avec défilement, de vidéo ni d'OCR.
+- Les ajouts Screenpresso n'ont pas encore été essayés à la souris (voir
+  etat-des-lieux.md § 8) ; la vidéo demande macOS 15 et n'existe pas encore sous
+  Windows.
 
 ## Crédits
 
