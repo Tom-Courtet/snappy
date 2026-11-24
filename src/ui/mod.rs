@@ -24,6 +24,14 @@ mod tests {
         ("editor/extras.rs", include_str!("../editor/extras.rs")),
         ("editor/links.rs", include_str!("../editor/links.rs")),
         ("render.rs", include_str!("../render.rs")),
+        // Lot « Aperçus et tampons » (`emoji.rs` n'y est pas : ses émojis sont
+        // toujours dessinés en images, jamais par egui).
+        ("editor/previews.rs", include_str!("../editor/previews.rs")),
+        ("editor/palettes.rs", include_str!("../editor/palettes.rs")),
+        (
+            "render/stamp_art.rs",
+            include_str!("../render/stamp_art.rs"),
+        ),
     ];
 
     /// Caractères écrits `\u{…}` dans une chaîne (les icônes de [`super::icons`]).

@@ -207,6 +207,18 @@ pub fn paint(painter: &Painter, view: View, ann: &Annotation) {
             painter.circle_filled(lens, radius * zoom * s, Color32::from_black_alpha(90));
             painter.circle_stroke(lens, radius * zoom * s, stroke);
         }
+        // Lot « Aperçus et tampons » : émojis et souris ne sont pas des glyphes de la
+        // police d'icônes, ni les dessins (un émoji ne passe jamais par le texte d'egui) :
+        // un cadre.
+        Shape::Stamp { at, icon, size } if !super::tools::is_icon_glyph(icon) => {
+            let b = crate::model::stamp_box(*at, icon, *size, &render::text_size);
+            painter.rect_stroke(
+                view.rect(b),
+                CornerRadius::same((size * s * 0.2).min(255.0) as u8),
+                stroke,
+                StrokeKind::Middle,
+            );
+        }
         Shape::Stamp { at, icon, size } => {
             painter.text(
                 view.to_screen(*at),

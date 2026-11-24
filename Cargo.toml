@@ -94,6 +94,14 @@ windows = { version = "0.62.2", default-features = false, features = ["std", "Fo
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSSharingService", "NSPrintOperation", "NSPrintInfo", "NSImageView", "NSControl", "NSTextField", "NSText", "NSFont", "NSColor", "NSCell", "NSImageCell"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSURL", "NSData", "NSError"] }
 
+# --- Lot « Aperçus et tampons » ---
+# Émojis en couleur des tampons « Réactions » : dessinés par CoreText (Apple Color
+# Emoji) dans un contexte bitmap. Même famille objc2 0.6 / 0.3.2 (déjà dans Cargo.lock).
+[target.'cfg(any(target_os = "macos"))'.dependencies]
+objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFont", "CTLine", "CTStringAttributes", "objc2-core-graphics"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["CFAttributedString"] }
+# --- fin du lot « Aperçus et tampons » ---
+
 # Verbe « imprimer » de l'Explorateur (ShellExecuteW). Même principe.
 [target.'cfg(all(windows))'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_Shell"] }

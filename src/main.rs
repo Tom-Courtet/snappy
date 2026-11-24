@@ -19,7 +19,9 @@ mod capture;
 mod capture_modes;
 mod config;
 mod editor;
+// Lot « Aperçus et tampons » : émojis en couleur des tampons.
 mod effects;
+mod emoji;
 mod files;
 mod history;
 mod ipc;

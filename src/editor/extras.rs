@@ -20,7 +20,7 @@ use egui::{Align, Layout, RichText, Ui};
 use image::RgbaImage;
 
 use super::preview::{self, View};
-use super::tools::{FILE_PREFIX, LABEL_PREFIX, Tool, is_glyph_stamp, label_size};
+use super::tools::{FILE_PREFIX, LABEL_PREFIX, Tool, is_glyph_stamp};
 use super::{Drag, Editor};
 use crate::history;
 use crate::model::{
@@ -777,7 +777,11 @@ impl Editor {
     pub(super) fn add_user_stamps(&mut self) {
         let Some(files) = rfd::FileDialog::new()
             .set_title("Ajouter des tampons")
-            .add_filter("Image PNG", &["png", "PNG"])
+            // Lot « Aperçus et tampons » : JPEG aussi, converti en PNG.
+            .add_filter(
+                "Image PNG ou JPEG",
+                &["png", "PNG", "jpg", "JPG", "jpeg", "JPEG"],
+            )
             .pick_files()
         else {
             return;
@@ -785,7 +789,12 @@ impl Editor {
         let dir = self.user_stamps_dir();
         let mut last = None;
         for f in files {
-            match copy_asset(&f, &dir) {
+            let copied = if is_png(&f) {
+                copy_asset(&f, &dir)
+            } else {
+                super::palettes::import_as_png(&f, &dir)
+            };
+            match copied {
                 Ok(name) => last = Some(name),
                 Err(e) => self.say(format!("{} {e:#}", icons::WARNING)),
             }
@@ -814,7 +823,7 @@ impl Editor {
             let shape = Shape::Label {
                 at,
                 text: text.to_owned(),
-                size: label_size(m),
+                size: self.style.label_size(m),
             };
             let ann = self.style.annotate(shape, m);
             self.checkpoint();
@@ -823,7 +832,17 @@ impl Editor {
             self.changed();
         } else if let Some(file) = stamp.strip_prefix(FILE_PREFIX) {
             let path = self.user_stamps_dir().join(file);
+            let before = self.doc.annotations.len();
             self.insert_image_file(&path, Some(at));
+            // Lot « Aperçus et tampons » : curseur « Taille » des tampons.
+            let k = self.style.stamp_factor();
+            if k != 1.0
+                && self.doc.annotations.len() > before
+                && let Some(ann) = self.doc.annotations.last_mut()
+            {
+                super::palettes::scale_image(ann, k);
+                self.changed();
+            }
         }
     }
 
@@ -1121,6 +1140,15 @@ impl Editor {
             self.renumber_steps();
             ui.close();
         }
+        // Lot « Aperçus et tampons ».
+        if ui
+            .button(format!("{}  Insérer un tampon…", icons::STAMP))
+            .clicked()
+        {
+            ui.close();
+            let ctx = ui.ctx().clone();
+            self.open_stamp_panel(&ctx);
+        }
     }
 
     /// Barre au-dessus des outils : image précédente / suivante et son nom ; à
@@ -1210,6 +1238,15 @@ impl Editor {
             ui.close();
             self.insert_image_dialog();
         }
+        // Lot « Aperçus et tampons ».
+        if ui
+            .button(format!("{}  Insérer un tampon…", icons::STAMP))
+            .on_hover_text("Tampons, icônes, émojis, pointeurs de souris")
+            .clicked()
+        {
+            ui.close();
+            self.open_stamp_panel(ctx);
+        }
         if ui
             .button(format!("{}  Copier une partie de l'image", icons::CROP))
             .on_hover_text("Glisser sur l'image pour choisir la zone (Échap : annuler)")
@@ -1289,7 +1326,7 @@ fn is_png(p: &Path) -> bool {
 }
 
 /// Copie `src` dans `dir` sous un nom libre ; rend ce nom.
-fn copy_asset(src: &Path, dir: &Path) -> Result<String> {
+pub(super) fn copy_asset(src: &Path, dir: &Path) -> Result<String> {
     fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
     let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
     let dest = history::free_path(dir, stem, "png");

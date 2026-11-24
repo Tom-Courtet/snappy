@@ -24,8 +24,12 @@ mod bars;
 mod extras;
 mod image_tab;
 mod links;
+// Lot « Aperçus et tampons » : vignettes rendues, palette des préréglages, panneau des
+// tampons.
+mod palettes;
 mod prefs;
 mod preview;
+mod previews;
 mod tools;
 
 use std::collections::BTreeMap;
@@ -197,6 +201,17 @@ pub(crate) struct Editor {
     banner: f32,
     /// Échelle d'affichage du dernier rendu (curseur de zoom).
     shown_scale: f32,
+    // --- Lot « Aperçus et tampons »
+    /// Vignettes rendues (préréglages, favoris, options, tampons).
+    previews: previews::Previews,
+    /// Palette des préréglages ouverte : son outil et son coin haut gauche.
+    palette: Option<(Tool, egui::Pos2)>,
+    /// Panneau des tampons ouvert : son coin haut gauche.
+    stamp_panel: Option<egui::Pos2>,
+    /// Sous le bouton de l'outil Tampon : où ouvrir le panneau depuis un menu.
+    stamp_anchor: egui::Pos2,
+    /// Image où un panneau flottant s'est ouvert (ce clic-là ne le referme pas).
+    popup_frame: u64,
 }
 
 /// Historique d'annulation maximal.
@@ -248,6 +263,11 @@ impl Editor {
             paste_marker: false,
             banner: 0.0,
             shown_scale: 1.0,
+            previews: Default::default(),
+            palette: None,
+            stamp_panel: None,
+            stamp_anchor: egui::pos2(12.0, 90.0),
+            popup_frame: 0,
         }
     }
 
@@ -1282,6 +1302,7 @@ impl eframe::App for Editor {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(16)))
             .show(ui, |ui| self.canvas(ui));
+        self.floating_panels(&ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

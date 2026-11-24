@@ -16,6 +16,9 @@ use tiny_skia::{
     Pixmap, PixmapPaint, Rect, SpreadMode, Stroke, StrokeDash, Transform,
 };
 
+// Lot « Aperçus et tampons » : tampons dessinés en couleur.
+pub(crate) mod stamp_art;
+
 use crate::model::{
     Annotation, ArrowStyle, Bounds, BracketSide, BubbleKind, Doc, EndShape, LineStyle, Pt, Rgba,
     Shape, StepFormat, StepTail, TextAlign, TextStyle, arrow_points, bend_control, bubble_box,
@@ -385,6 +388,10 @@ fn draw(
         Shape::Stamp { at, icon, size } => {
             if let Some(button) = icon.strip_prefix(MOUSE_PREFIX) {
                 draw_mouse(pixmap, *at, button, *size, color, ts);
+            } else if let Some(emoji) = icon.strip_prefix(EMOJI_PREFIX) {
+                draw_emoji(pixmap, *at, emoji, *size, color, ts);
+            } else if stamp_art::handles(icon) {
+                stamp_art::draw(pixmap, *at, icon, *size, color, ts);
             } else {
                 draw_stamp(pixmap, *at, icon, *size, color, ts);
             }
@@ -1400,6 +1407,83 @@ fn draw_mouse(pixmap: &mut Pixmap, at: Pt, button: &str, size: f32, color: Rgba,
     }
 }
 
+// --- Lot « Aperçus et tampons » : tampons émoji -------------------------------------
+
+/// Préfixe d'un tampon émoji (`emoji:👍`) dans [`Shape::Stamp`] : dessiné en couleur
+/// par le système (voir `crate::emoji`).
+pub const EMOJI_PREFIX: &str = "emoji:";
+
+/// Émojis déjà dessinés, par texte et côté en pixels.
+type EmojiCache = HashMap<(String, u32), Option<Arc<Pixmap>>>;
+static EMOJIS: LazyLock<Mutex<EmojiCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Émoji dessiné dans un carré de `side` pixels (gardé en cache).
+fn emoji_pixmap(text: &str, side: u32) -> Option<Arc<Pixmap>> {
+    let side = side.clamp(4, crate::emoji::MAX_SIDE);
+    let mut cache = EMOJIS.lock().ok()?;
+    // Redimensionner un tampon crée une taille par image : le cache reste borné.
+    if cache.len() > 256 {
+        cache.clear();
+    }
+    cache
+        .entry((text.to_owned(), side))
+        .or_insert_with(|| {
+            let img = crate::emoji::rasterize(text, side)?;
+            to_pixmap(&img).map(Arc::new)
+        })
+        .clone()
+}
+
+/// Tampon émoji de côté `size`, centré sur `at`. Sans émojis sur ce système : un
+/// cadre avec un point d'interrogation.
+fn draw_emoji(pixmap: &mut Pixmap, at: Pt, text: &str, size: f32, color: Rgba, ts: Transform) {
+    let b = Bounds {
+        min: at.offset(-size / 2.0, -size / 2.0),
+        max: at.offset(size / 2.0, size / 2.0),
+    };
+    let Some(r) = rect(b) else { return };
+    match emoji_pixmap(text, size.ceil().max(1.0) as u32) {
+        Some(img) => {
+            let side = img.width() as f32;
+            let fit =
+                Transform::from_scale(size / side, size / side).post_translate(b.min.x, b.min.y);
+            let shader = Pattern::new(
+                img.as_ref().as_ref(),
+                SpreadMode::Pad,
+                FilterQuality::Bicubic,
+                1.0,
+                fit,
+            );
+            let p = Paint {
+                shader,
+                anti_alias: true,
+                ..Paint::default()
+            };
+            pixmap.fill_rect(r, &p, ts, None);
+        }
+        None => {
+            if let Some(frame) = rounded_rect(b, size * 0.2) {
+                pixmap.fill_path(
+                    &frame,
+                    &paint(Rgba(128, 128, 128, 90)),
+                    FillRule::Winding,
+                    ts,
+                    None,
+                );
+                pixmap.stroke_path(&frame, &paint(color), &stroke(size * 0.05), ts, None);
+            }
+            draw_stamp(
+                pixmap,
+                at,
+                crate::ui::icons::STAMP_QUESTION,
+                size * 0.6,
+                color,
+                ts,
+            );
+        }
+    }
+}
+
 /// Hauteur du bandeau des propriétés (titre, description) pour une image de cette
 /// largeur ; 0 sans bandeau.
 pub fn banner_height(doc: &Doc, width: u32) -> u32 {
@@ -2195,5 +2279,67 @@ mod tests {
             [0, 128, 0, 255],
             "image dessous"
         );
+    }
+
+    // --- Lot « Aperçus et tampons »
+
+    #[test]
+    fn drawn_stamps_keep_the_json_format_and_their_box() {
+        let stamp = ann(
+            Shape::Stamp {
+                at: Pt::new(100.0, 40.0),
+                icon: "tampon:APPROUVÉ".into(),
+                size: 40.0,
+            },
+            RED,
+        );
+        let back: Annotation =
+            serde_json::from_str(&serde_json::to_string(&stamp).unwrap()).unwrap();
+        assert_eq!(back, stamp);
+        let b = stamp.bounds(text_size);
+        assert!(b.width() > 100.0 && b.height() == 40.0, "{b:?}");
+        let out = render(&white(200, 80), std::slice::from_ref(&stamp));
+        // Encre rouge dans le cadre, rien en dehors.
+        assert!(out.pixels().any(|p| p.0[0] > 180 && p.0[1] < 120));
+        assert_eq!(out.get_pixel(2, 2).0, WHITE_PX);
+        // Une icône Lucide d'avant reste dessinée comme avant (carré de 40).
+        let lucide = ann(
+            Shape::Stamp {
+                at: Pt::new(40.0, 40.0),
+                icon: crate::ui::icons::STAMP_CHECK.into(),
+                size: 40.0,
+            },
+            RED,
+        );
+        let b = lucide.bounds(text_size);
+        assert_eq!((b.width(), b.height()), (40.0, 40.0));
+    }
+
+    #[test]
+    fn emoji_stamps_round_trip_and_draw() {
+        let stamp = ann(
+            Shape::Stamp {
+                at: Pt::new(40.0, 40.0),
+                icon: format!("{EMOJI_PREFIX}{}", crate::emoji::POSITIVE[0].0),
+                size: 60.0,
+            },
+            RED,
+        );
+        // Même format JSON que les autres tampons : le texte de l'icône, préfixé.
+        let json = serde_json::to_string(&stamp).unwrap();
+        assert!(json.contains("emoji:"), "{json}");
+        let back: Annotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, stamp);
+        let out = render(&white(80, 80), std::slice::from_ref(&stamp));
+        let changed = out.pixels().filter(|p| p.0 != WHITE_PX).count();
+        assert!(changed > 400, "quelque chose est dessiné : {changed}");
+        if crate::emoji::AVAILABLE {
+            // L'émoji en couleur, pas le cadre de remplacement (rouge).
+            assert!(
+                out.pixels()
+                    .any(|p| p.0[1] > 120 && p.0[2] < 100 && p.0 != WHITE_PX),
+                "pouce jaune dessiné"
+            );
+        }
     }
 }

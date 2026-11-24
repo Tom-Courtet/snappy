@@ -1,12 +1,13 @@
 //! Barres de l'éditeur : outils et export (en haut), options du style (en dessous,
 //! selon l'outil ou l'annotation sélectionnée), état (en bas).
 
-use egui::{Align, Layout, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{Align, Layout, RichText, Sense, Stroke, Ui, Vec2, vec2};
 
 use super::Editor;
 use super::prefs::Preset;
 use super::preview;
-use super::tools::{STAMPS, Size, TOOLS, Tool, tool_of};
+use super::previews::{self, Sample};
+use super::tools::{Size, Style, TOOLS, Tool, tool_of};
 use crate::history;
 use crate::model::{ArrowStyle, PALETTE, Rgba, Shape};
 use crate::ui::{icons, keys, theme};
@@ -55,11 +56,24 @@ impl Editor {
             ui.spacing_mut().item_spacing.x = 3.0;
             for (tool, glyph, name, key) in TOOLS {
                 let tip = format!("{name} ({})", key.name());
-                if choice(ui, self.tool == tool, icon(glyph))
-                    .on_hover_text(tip)
-                    .clicked()
-                {
-                    self.set_tool(tool);
+                let response = choice(ui, self.tool == tool, icon(glyph)).on_hover_text(tip);
+                // Lot « Aperçus et tampons » : un second clic sur l'outil actif ouvre
+                // sa palette de préréglages (le panneau des tampons pour le tampon).
+                if tool == Tool::Stamp {
+                    self.stamp_anchor = response.rect.left_bottom() + vec2(0.0, 4.0);
+                }
+                if response.clicked() {
+                    if self.tool == tool {
+                        let ctx = ui.ctx().clone();
+                        let anchor = response.rect.left_bottom() + vec2(0.0, 4.0);
+                        match tool {
+                            Tool::Select => {}
+                            Tool::Stamp => self.toggle_stamp_panel(&ctx, anchor),
+                            _ => self.toggle_palette(&ctx, tool, anchor),
+                        }
+                    } else {
+                        self.set_tool(tool);
+                    }
                 }
             }
             ui.separator();
@@ -228,7 +242,15 @@ impl Editor {
                         "Connecteur (ronds aux bouts)",
                     ),
                 ] {
-                    if choice(ui, self.style.arrow == style, icon(glyph))
+                    // Lot « Aperçus et tampons » : la variante rendue (l'icône reste
+                    // dans l'infobulle).
+                    let _ = glyph;
+                    let variant = Style {
+                        arrow: style,
+                        ..self.style.clone()
+                    };
+                    if self
+                        .variant_tile(ui, Tool::Arrow, &variant, self.style.arrow == style)
                         .on_hover_text(tip)
                         .clicked()
                     {
@@ -284,29 +306,20 @@ impl Editor {
                 }
             }
             Tool::Stamp => {
-                ui.menu_button(icon(&stamp_label(&self.style.stamp)), |ui| {
-                    egui::Grid::new("tampons")
-                        .spacing([4.0, 4.0])
-                        .show(ui, |ui| {
-                            for (i, (glyph, name)) in STAMPS.iter().enumerate() {
-                                let text = RichText::new(*glyph).size(28.0);
-                                if choice(ui, self.style.stamp == *glyph, text)
-                                    .on_hover_text(*name)
-                                    .clicked()
-                                {
-                                    self.style.stamp = (*glyph).to_owned();
-                                    changed = true;
-                                    ui.close();
-                                }
-                                if i % 7 == 6 {
-                                    ui.end_row();
-                                }
-                            }
-                        });
-                    changed |= self.more_stamps(ui);
-                })
-                .response
-                .on_hover_text("Choisir le tampon");
+                // Lot « Aperçus et tampons » : le tampon courant, tel qu'il sera
+                // dessiné ; un clic ouvre le panneau des tampons.
+                let ctx = ui.ctx().clone();
+                let size = vec2(44.0, 28.0);
+                let base = previews::stamp_base(&self.style);
+                let stamp = self.style.stamp.clone();
+                let tex = self.previews.stamp(&ctx, &stamp, &self.style, base, size);
+                let open = self.stamp_panel.is_some();
+                let response = previews::tile(ui, Some(tex), None, size, open, theme::SURFACE_HI)
+                    .on_hover_text(format!("Choisir le tampon · {}", stamp_label(&stamp)));
+                if response.clicked() {
+                    let anchor = response.rect.left_bottom() + vec2(0.0, 4.0);
+                    self.toggle_stamp_panel(&ctx, anchor);
+                }
             }
             Tool::Step => {
                 ui.label(
@@ -395,14 +408,14 @@ impl Editor {
         }
         let mut remove = None;
         for (i, preset) in self.presets.clone().iter().enumerate() {
-            let glyph = TOOLS
+            // Lot « Aperçus et tampons » : vignette rendue de l'outil à ce style.
+            let name = TOOLS
                 .iter()
                 .find(|t| t.0 == preset.tool)
-                .map_or(icons::STAR, |t| t.1);
-            let text = icon(glyph).color(preview::color32(preset.style.color));
-            let response = ui
-                .add(egui::Button::new(text).fill(theme::SURFACE_HI))
-                .on_hover_text("Favori · clic droit : retirer");
+                .map_or("", |t| t.2);
+            let response = self
+                .variant_tile(ui, preset.tool, &preset.style, false)
+                .on_hover_text(format!("Favori : {name} · clic droit : retirer"));
             if response.clicked() {
                 self.set_tool(preset.tool);
                 self.style = preset.style.clone();
@@ -464,19 +477,14 @@ impl Editor {
 
 // --- Lot « Éditeur : annotations » : options en plus --------------------------------
 
-/// Texte affiché pour un tampon : son icône, ou son texte, ou le nom de son image.
+/// Nom d'un tampon (infobulle) : jamais un émoji, qui ne passe pas par le texte
+/// d'egui.
 fn stamp_label(stamp: &str) -> String {
-    use super::tools::{FILE_PREFIX, LABEL_PREFIX};
-    if let Some(button) = stamp.strip_prefix(crate::render::MOUSE_PREFIX) {
-        format!("Souris {button}")
-    } else if let Some(text) = stamp.strip_prefix(LABEL_PREFIX) {
-        text.to_owned()
-    } else if let Some(file) = stamp.strip_prefix(FILE_PREFIX) {
-        format!("{} {file}", icons::IMAGE)
-    } else {
-        stamp.to_owned()
-    }
+    super::palettes::stamp_name(stamp)
 }
+
+/// Lot « Aperçus et tampons » : vignette d'une variante d'option.
+const OPTION_TILE: Vec2 = vec2(34.0, 24.0);
 
 /// Petit libellé de choix, à la taille des barres.
 fn word(text: &str) -> RichText {
@@ -506,7 +514,13 @@ impl Editor {
                 (LineStyle::Dotted, "···", "Pointillé"),
                 (LineStyle::DashDot, "-·-", "Tiret-point"),
             ] {
-                if choice(ui, self.style.dash == dash, word(label))
+                let _ = label;
+                let variant = Style {
+                    dash,
+                    ..self.style.clone()
+                };
+                if self
+                    .variant_tile(ui, tool, &variant, self.style.dash == dash)
                     .on_hover_text(tip)
                     .clicked()
                 {
@@ -539,7 +553,14 @@ impl Editor {
                     (StepFormat::Letter, "A", "A, B, C…"),
                     (StepFormat::Roman, "i", "i, ii, iii…"),
                 ] {
-                    if choice(ui, self.style.step_format == format, word(label))
+                    let _ = label;
+                    let variant = Style {
+                        step_format: format,
+                        step_tail: StepTail::Hidden,
+                        ..self.style.clone()
+                    };
+                    if self
+                        .variant_tile(ui, Tool::Step, &variant, self.style.step_format == format)
                         .on_hover_text(tip)
                         .clicked()
                     {
@@ -558,17 +579,42 @@ impl Editor {
                     .iter()
                     .find(|t| t.0 == self.style.step_tail)
                     .map_or("Pointe", |t| t.1);
+                let shown: Vec<_> = tails
+                    .iter()
+                    .map(|(tail, _)| {
+                        self.variant_texture(
+                            ui,
+                            Tool::Step,
+                            &Style {
+                                step_tail: *tail,
+                                ..self.style.clone()
+                            },
+                        )
+                    })
+                    .collect();
                 egui::ComboBox::from_id_salt("lien_pastille")
                     .selected_text(current)
                     .width(90.0)
                     .show_ui(ui, |ui| {
-                        for (tail, label) in tails {
-                            if ui
-                                .selectable_value(&mut self.style.step_tail, tail, label)
-                                .changed()
-                            {
-                                changed = true;
-                            }
+                        for ((tail, label), (tex, bg)) in tails.into_iter().zip(&shown) {
+                            ui.horizontal(|ui| {
+                                let selected = self.style.step_tail == tail;
+                                let tile = previews::tile(
+                                    ui,
+                                    Some(*tex),
+                                    None,
+                                    OPTION_TILE,
+                                    selected,
+                                    *bg,
+                                );
+                                if tile.clicked()
+                                    | ui.selectable_value(&mut self.style.step_tail, tail, label)
+                                        .changed()
+                                {
+                                    self.style.step_tail = tail;
+                                    changed = true;
+                                }
+                            });
                         }
                     })
                     .response
@@ -621,19 +667,49 @@ impl Editor {
                     (EndShape::Arrow, "Flèche"),
                     (EndShape::Round, "Rond"),
                 ];
-                for (id, label, value) in [
+                // Aperçus : une ligne ouverte avec ce bout au départ, ou à la fin.
+                let mut shown = Vec::new();
+                for start in [true, false] {
+                    for (end, _) in ends {
+                        let variant = Style {
+                            poly_closed: false,
+                            poly_start: if start { end } else { EndShape::Plain },
+                            poly_end: if start { EndShape::Plain } else { end },
+                            ..self.style.clone()
+                        };
+                        shown.push(self.variant_texture(ui, Tool::Polygon, &variant));
+                    }
+                }
+                for (n, (id, label, value)) in [
                     ("depart_polygone", "Départ", &mut self.style.poly_start),
                     ("fin_polygone", "Fin", &mut self.style.poly_end),
-                ] {
+                ]
+                .into_iter()
+                .enumerate()
+                {
                     let current = ends.iter().find(|e| e.0 == *value).map_or("", |e| e.1);
                     egui::ComboBox::from_id_salt(id)
                         .selected_text(format!("{label} : {current}"))
                         .width(110.0)
                         .show_ui(ui, |ui| {
-                            for (shape, name) in ends {
-                                if ui.selectable_value(value, shape, name).changed() {
-                                    changed = true;
-                                }
+                            for (k, (shape, name)) in ends.into_iter().enumerate() {
+                                let (tex, bg) = shown[n * ends.len() + k];
+                                ui.horizontal(|ui| {
+                                    let tile = previews::tile(
+                                        ui,
+                                        Some(tex),
+                                        None,
+                                        OPTION_TILE,
+                                        *value == shape,
+                                        bg,
+                                    );
+                                    if tile.clicked()
+                                        | ui.selectable_value(value, shape, name).changed()
+                                    {
+                                        *value = shape;
+                                        changed = true;
+                                    }
+                                });
                             }
                         });
                 }
@@ -645,7 +721,13 @@ impl Editor {
                     (BracketSide::Top, "Haut", "Pointe en haut"),
                     (BracketSide::Bottom, "Bas", "Pointe en bas"),
                 ] {
-                    if choice(ui, self.style.bracket == side, word(label))
+                    let _ = label;
+                    let variant = Style {
+                        bracket: side,
+                        ..self.style.clone()
+                    };
+                    if self
+                        .variant_tile(ui, Tool::Bracket, &variant, self.style.bracket == side)
                         .on_hover_text(tip)
                         .clicked()
                     {
@@ -663,7 +745,13 @@ impl Editor {
                 (BubbleKind::NoTail, "Sans pointe", "Bulle sans pointe"),
                 (BubbleKind::Simple, "Simple", "Cadre simple"),
             ] {
-                if choice(ui, self.style.bubble == kind, word(label))
+                let _ = label;
+                let variant = Style {
+                    bubble: kind,
+                    ..self.style.clone()
+                };
+                if self
+                    .variant_tile(ui, Tool::Bubble, &variant, self.style.bubble == kind)
                     .on_hover_text(tip)
                     .clicked()
                 {
@@ -848,70 +936,25 @@ impl Editor {
         }
     }
 
-    /// Préréglages numérotés de l'outil (en plus des favoris ★) : un clic applique,
-    /// « Nouveau » ajoute le style courant, l'icône d'enregistrement l'écrase, ✕ le
-    /// supprime.
+    /// Préréglages numérotés de l'outil (en plus des favoris ★) : le bouton ouvre la
+    /// palette des vignettes (lot « Aperçus et tampons », voir `palettes.rs`).
     fn tool_presets_menu(&mut self, ui: &mut Ui) {
-        use super::prefs::ToolPresets;
         let tool = self.options_tool();
-        let list = self.tool_presets.get(&tool).cloned().unwrap_or_default();
-        let label = if list.is_empty() {
+        let n = self.tool_presets.get(&tool).map_or(0, Vec::len);
+        let label = if n == 0 {
             "Préréglages".to_owned()
         } else {
-            format!("Préréglages ({})", list.len())
+            format!("Préréglages ({n})")
         };
-        ui.menu_button(word(&label), |ui| {
-            let name = TOOLS.iter().find(|t| t.0 == tool).map_or("", |t| t.2);
-            ui.label(RichText::new(name).color(theme::TEXT_DIM));
-            let mut save = false;
-            for (i, style) in list.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    let number = RichText::new(format!(" {} ", i + 1))
-                        .size(theme::SIZE_L)
-                        .strong()
-                        .color(preview::color32(style.color));
-                    if ui
-                        .add(egui::Button::new(number).fill(theme::SURFACE_HI))
-                        .on_hover_text("Appliquer")
-                        .clicked()
-                    {
-                        self.style = style.clone();
-                        self.hex_input = self.style.color.hex();
-                        self.style_changed();
-                        ui.close();
-                    }
-                    if ui
-                        .small_button(icons::SAVE)
-                        .on_hover_text("Écraser avec le style courant")
-                        .clicked()
-                    {
-                        self.tool_presets.overwrite(tool, i, self.style.clone());
-                        save = true;
-                    }
-                    if ui
-                        .small_button(icons::CLOSE)
-                        .on_hover_text("Supprimer ce préréglage")
-                        .clicked()
-                    {
-                        self.tool_presets.delete(tool, i);
-                        save = true;
-                    }
-                });
-            }
-            if ui
-                .button(format!("{}  Nouveau", icons::ADD))
-                .on_hover_text("Ajouter le style courant")
-                .clicked()
-            {
-                self.tool_presets.add(tool, self.style.clone());
-                save = true;
-            }
-            if save {
-                self.save_prefs();
-            }
-        })
-        .response
-        .on_hover_text("Préréglages de cet outil");
+        let open = self.palette.is_some_and(|(t, _)| t == tool);
+        let response = choice(ui, open, word(&label)).on_hover_text(
+            "Préréglages de cet outil (ou second clic sur l'outil) : vignettes à appliquer",
+        );
+        if response.clicked() {
+            let ctx = ui.ctx().clone();
+            let anchor = response.rect.left_bottom() + vec2(0.0, 4.0);
+            self.toggle_palette(&ctx, tool, anchor);
+        }
     }
 
     /// Plusieurs annotations sélectionnées : aligner, répartir.
@@ -945,81 +988,31 @@ impl Editor {
         });
     }
 
-    /// Catégories de tampons après les classiques : souris, texte, tampons personnels.
-    fn more_stamps(&mut self, ui: &mut Ui) -> bool {
-        use super::tools::{FILE_PREFIX, LABEL_PREFIX, MOUSE_STAMPS, TEXT_STAMPS};
-        let mut chosen: Option<String> = None;
-        let current = self.style.stamp.clone();
-        let mut pick = |ui: &mut Ui, stamp: String, text: RichText, tip: &str| {
-            if choice(ui, current == stamp, text)
-                .on_hover_text(tip)
-                .clicked()
-            {
-                chosen = Some(stamp);
-                ui.close();
-            }
-        };
-        ui.separator();
-        ui.label(RichText::new("Souris").color(theme::TEXT_DIM));
-        ui.horizontal_wrapped(|ui| {
-            ui.set_max_width(320.0);
-            for (stamp, name) in MOUSE_STAMPS {
-                let text = if stamp.contains(':') {
-                    word(&stamp_label(stamp))
-                } else {
-                    RichText::new(stamp).size(28.0)
-                };
-                pick(ui, stamp.to_owned(), text, name);
-            }
-        });
-        ui.label(RichText::new("Texte").color(theme::TEXT_DIM));
-        ui.horizontal_wrapped(|ui| {
-            ui.set_max_width(320.0);
-            for text in TEXT_STAMPS {
-                pick(
-                    ui,
-                    format!("{LABEL_PREFIX}{text}"),
-                    word(text),
-                    "Tampon texte",
-                );
-            }
-        });
-        ui.label(RichText::new("Mes tampons").color(theme::TEXT_DIM));
-        let mine = self.user_stamps();
-        ui.horizontal_wrapped(|ui| {
-            ui.set_max_width(320.0);
-            for name in mine {
-                pick(
-                    ui,
-                    format!("{FILE_PREFIX}{name}"),
-                    word(&name),
-                    "Tampon personnel",
-                );
-            }
-        });
-        let mut changed = false;
-        if let Some(stamp) = chosen {
-            self.style.stamp = stamp;
-            changed = true;
-        }
-        ui.horizontal(|ui| {
-            if ui
-                .button(format!("{}  Ajouter…", icons::ADD))
-                .on_hover_text("Copier des images PNG dans mes tampons")
-                .clicked()
-            {
-                self.add_user_stamps();
-                changed = true;
-            }
-            if ui
-                .button(icon(icons::FOLDER))
-                .on_hover_text("Ouvrir le dossier de mes tampons")
-                .clicked()
-            {
-                history::open_dir(&self.user_stamps_dir());
-            }
-        });
-        changed
+    /// Texture et fond de la vignette d'un outil à ce style.
+    fn variant_texture(
+        &mut self,
+        ui: &Ui,
+        tool: Tool,
+        style: &Style,
+    ) -> (egui::TextureId, egui::Color32) {
+        let ctx = ui.ctx().clone();
+        let assets = self.user_stamps_dir();
+        let tex = self
+            .previews
+            .tool(&ctx, tool, style, OPTION_TILE, Some(&assets));
+        (tex, previews::tile_paper(Sample::Tool(tool), style))
+    }
+
+    /// Vignette cliquable d'un outil à ce style (variantes d'option, favoris).
+    fn variant_tile(
+        &mut self,
+        ui: &mut Ui,
+        tool: Tool,
+        style: &Style,
+        selected: bool,
+    ) -> egui::Response {
+        let (tex, bg) = self.variant_texture(ui, tool, style);
+        previews::tile(ui, Some(tex), None, OPTION_TILE, selected, bg)
     }
 
     /// Curseur de zoom (en % de la taille réelle).

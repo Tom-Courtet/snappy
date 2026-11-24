@@ -10,7 +10,7 @@ use crate::model::{
 };
 use crate::ui::icons;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tool {
     Select,
@@ -61,7 +61,7 @@ pub const TOOLS: [(Tool, &str, &str, Key); 17] = [
         Key::N,
     ),
     (Tool::Magnifier, icons::MAGNIFIER, "Loupe", Key::M),
-    (Tool::Stamp, icons::STAMP, "Tampon", Key::K),
+    (Tool::Stamp, icons::STAMP, "Tampons et icônes", Key::K),
     // --- Lot « Éditeur : annotations » (G et J étaient libres).
     (
         Tool::Polygon,
@@ -88,6 +88,21 @@ pub const STAMPS: [(&str, &str); 14] = [
     (icons::STAMP_BAN, "Interdit"),
     (icons::STAMP_FLAG, "Drapeau"),
     (icons::STAMP_IDEA, "Idée"),
+];
+
+/// Lot « Aperçus et tampons » : autres tampons « Classique », pris parmi les icônes
+/// Lucide déjà embarquées (en plus de [`STAMPS`]).
+pub const MORE_STAMPS: [(&str, &str); 10] = [
+    (icons::OK, "Coche"),
+    (icons::CLOSE, "Croix"),
+    (icons::ADD, "Plus"),
+    (icons::ARROW_BIG, "Grosse flèche"),
+    (icons::PIN, "Punaise"),
+    (icons::MAGNIFIER, "Loupe"),
+    (icons::SETTINGS, "Réglages"),
+    (icons::EDIT, "Crayon"),
+    (icons::DELETE, "Corbeille"),
+    (icons::SCREEN, "Écran"),
 ];
 
 /// Épaisseur du trait et taille du texte.
@@ -166,7 +181,19 @@ pub struct Style {
     pub poly_start: EndShape,
     pub poly_end: EndShape,
     pub bracket: BracketSide,
+    // --- Lot « Aperçus et tampons »
+    /// Taille des tampons, en multiple de S / M / L (curseur « Taille » du panneau des
+    /// tampons). 1 : taille d'origine, non écrite dans `editor.json`.
+    #[serde(skip_serializing_if = "is_unit_scale")]
+    pub stamp_scale: f32,
 }
+
+fn is_unit_scale(v: &f32) -> bool {
+    *v == 1.0
+}
+
+/// Bornes du curseur « Taille » des tampons.
+pub const STAMP_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.25..=4.0;
 
 impl Default for Style {
     fn default() -> Self {
@@ -193,6 +220,7 @@ impl Default for Style {
             poly_start: EndShape::Plain,
             poly_end: EndShape::Plain,
             bracket: BracketSide::Left,
+            stamp_scale: 1.0,
         }
     }
 }
@@ -210,8 +238,24 @@ impl Style {
         Metrics {
             stroke: self.size.stroke() * density,
             text: self.size.text() * density,
-            stamp: self.size.stamp() * density,
+            stamp: self.size.stamp() * density * self.stamp_factor(),
         }
+    }
+
+    /// Multiple de la taille des tampons, borné (une valeur lue de travers reste
+    /// utilisable).
+    pub fn stamp_factor(&self) -> f32 {
+        if self.stamp_scale.is_finite() {
+            self.stamp_scale
+                .clamp(*STAMP_SCALE_RANGE.start(), *STAMP_SCALE_RANGE.end())
+        } else {
+            1.0
+        }
+    }
+
+    /// Taille d'un tampon texte à ce style.
+    pub fn label_size(&self, m: Metrics) -> f32 {
+        label_size(m) * self.stamp_factor()
     }
 
     /// Arrondi des coins d'un rectangle.
@@ -297,7 +341,7 @@ impl Style {
                 ann.fill = self.fill;
             }
             Shape::Bracket { side, .. } => *side = self.bracket,
-            Shape::Label { size, .. } => *size = label_size(m),
+            Shape::Label { size, .. } => *size = self.label_size(m),
             _ => {}
         }
         self.apply_options(ann);
@@ -377,6 +421,13 @@ pub fn is_stroked(shape: &Shape) -> bool {
 /// Le tampon est-il une icône (glyphe Lucide ou souris en vecteurs) ?
 pub fn is_glyph_stamp(stamp: &str) -> bool {
     !stamp.starts_with(LABEL_PREFIX) && !stamp.starts_with(FILE_PREFIX)
+}
+
+/// Le tampon est-il un glyphe de la police d'icônes (ni souris, ni émoji, ni texte,
+/// ni image) ?
+pub fn is_icon_glyph(stamp: &str) -> bool {
+    // Les glyphes sont un seul caractère ; les autres tampons ont un préfixe `nom:`.
+    is_glyph_stamp(stamp) && !stamp.contains(':')
 }
 
 /// Taille d'un tampon texte.
@@ -640,6 +691,28 @@ mod tests {
         assert!(style.annotate(rect, M).fill);
         let line = new_shape(Tool::Line, Pt::default(), &style, M, 1).unwrap();
         assert!(!style.annotate(line, M).fill);
+    }
+
+    #[test]
+    fn stamp_scale_is_optional_in_json() {
+        // Taille d'origine : rien de nouveau n'est écrit dans editor.json.
+        let json = serde_json::to_string(&Style::default()).unwrap();
+        assert!(!json.contains("stamp_scale"), "{json}");
+        let big = Style {
+            stamp_scale: 2.0,
+            ..Style::default()
+        };
+        let back: Style = serde_json::from_str(&serde_json::to_string(&big).unwrap()).unwrap();
+        assert_eq!(back.metrics(1.0).stamp, Size::M.stamp() * 2.0);
+        // Un style écrit avant ce lot se relit à la taille d'origine.
+        let old: Style = serde_json::from_str(r#"{"size":"L"}"#).unwrap();
+        assert_eq!(old.stamp_factor(), 1.0);
+        let emoji = Style {
+            stamp: format!("{}x", crate::render::EMOJI_PREFIX),
+            ..Style::default()
+        };
+        assert!(is_glyph_stamp(&emoji.stamp) && !is_icon_glyph(&emoji.stamp));
+        assert!(is_icon_glyph(STAMPS[0].0));
     }
 
     #[test]

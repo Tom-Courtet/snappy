@@ -713,6 +713,34 @@ fn dist_to_polyline(p: Pt, points: &[Pt]) -> f32 {
     }
 }
 
+// --- Lot « Aperçus et tampons » : tampons dessinés plus larges que hauts ------------
+
+/// Préfixe d'un tampon encreur (`tampon:APPROUVÉ`).
+pub const RUBBER_PREFIX: &str = "tampon:";
+/// Préfixe d'un pointeur avec une étiquette bleue (`pastille:Cliquez ici`).
+pub const PILL_PREFIX: &str = "pastille:";
+/// Pastille « new » (dessin plus large que haut).
+pub const NEW_PILL: &str = "dessin:new-pilule";
+
+/// Cadre d'un tampon centré sur `at`, de hauteur `size`. Carré pour les icônes ;
+/// plus large pour les tampons encreurs, les pointeurs à étiquette et la pastille
+/// « new ».
+pub fn stamp_box(at: Pt, icon: &str, size: f32, text_size: &impl TextSize) -> Bounds {
+    let width = if let Some(text) = icon.strip_prefix(RUBBER_PREFIX) {
+        text_size(text, size * 0.5).0 + size * 0.8
+    } else if let Some(text) = icon.strip_prefix(PILL_PREFIX) {
+        size * 0.36 + text_size(text, size * 0.27).0 + size * 0.42
+    } else if icon == NEW_PILL {
+        size * 1.9
+    } else {
+        size
+    };
+    Bounds {
+        min: at.offset(-width / 2.0, -size / 2.0),
+        max: at.offset(width / 2.0, size / 2.0),
+    }
+}
+
 /// Mesure d'un texte : `(largeur, hauteur)` pour un texte et une taille de police.
 /// Fournie par le moteur de rendu, seul à connaître la police.
 pub trait TextSize: Fn(&str, f32) -> (f32, f32) {}
@@ -808,10 +836,7 @@ impl Annotation {
                     max: at.offset(lens, lens),
                 })
             }
-            Shape::Stamp { at, size, .. } => Bounds {
-                min: at.offset(-size / 2.0, -size / 2.0),
-                max: at.offset(size / 2.0, size / 2.0),
-            },
+            Shape::Stamp { at, icon, size } => stamp_box(*at, icon, *size, &text_size),
         }
     }
 
