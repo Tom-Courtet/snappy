@@ -34,7 +34,8 @@ winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 # --- Lot « Partage, impression, documents » ---
 # PDF du générateur de documents : écrivain bas niveau, léger (MIT/Apache-2.0).
 pdf-writer = "0.15.0"
-# GIF animé du générateur de documents (MIT/Apache-2.0). gifski est exclu (AGPL).
+# GIF animé du générateur de documents et du lecteur vidéo (MIT/Apache-2.0, quantification
+# NeuQuant de `color_quant`, MIT). gifski est exclu (AGPL).
 gif = "0.14.2"
 # Compression des images du PDF (déjà tiré par png).
 miniz_oxide = "0.8.9"
@@ -58,6 +59,15 @@ objc2-core-graphics = { version = "0.3.2", default-features = false, features = 
 objc2-vision = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-video", "VNDetectBarcodesRequest", "VNGenerateForegroundInstanceMaskRequest", "VNObservation", "VNRecognizeTextRequest", "VNRequest", "VNRequestHandler", "VNTypes"] }
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
 # --- fin du lot « Vision » ---
+
+# --- Lot « Vidéo » ---
+# Enregistrement : ScreenCaptureKit (`SCStream` + `SCRecordingOutput`, macOS 15+), qui
+# écrit directement un MP4 H.264. Lecteur : AVFoundation (images, découpe, vitesse,
+# muet, assemblage des segments d'une pause). Même famille objc2 0.6 / 0.3.2.
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "libc", "SCShareableContent", "SCStream", "SCRecordingOutput", "SCError", "objc2-av-foundation", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "AVAsset", "AVAssetTrack", "AVAssetImageGenerator", "AVAssetExportSession", "AVComposition", "AVCompositionTrack", "AVMediaFormat", "AVVideoSettings", "AVAudioProcessingSettings", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMTime", "CMTimeRange"] }
+# --- fin du lot « Vidéo » ---
 
 # Capture GDI, DPI par écran, position de la surcouche, console pour la ligne de
 # commande. Déjà tiré par tray-icon et winit.

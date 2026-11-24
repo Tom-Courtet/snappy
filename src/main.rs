@@ -54,6 +54,7 @@ Usage :
   snappy --screen         capture l'écran du curseur et l'ouvre dans l'éditeur
   snappy --previous       capture la même zone que la fois précédente
   snappy --edit <png>     ouvre une image dans l'éditeur
+  snappy --play <mp4>     ouvre une vidéo dans le lecteur (découpe, GIF, image)
   snappy --settings       ouvre les réglages (raccourcis, délai, dossier)
   snappy --export <png> <sortie.png>
                           aplatit une capture et ses annotations (.json à côté)
@@ -134,6 +135,13 @@ fn main() -> Result<()> {
             vision::remove_background_file(&input, &output)
         }
         Some(vision::WINDOW_ARG) => vision::window(),
+        // Lot « Vidéo » : barre d'enregistrement (lancée par `--capture video`) et
+        // lecteur.
+        Some(video::BAR_ARG) => video::run_bar(store, args.next()),
+        Some(video::PLAY_ARG) => {
+            let path = args.next().context("--play attend le chemin d'une vidéo")?;
+            video::play(store, PathBuf::from(path))
+        }
         Some("--export") => {
             let input = PathBuf::from(args.next().context("--export attend une capture")?);
             let output = PathBuf::from(
@@ -175,6 +183,10 @@ fn trigger(store: Store, mode: Mode, delay: u32) -> Result<()> {
 fn run_capture(store: Store, mode: Mode) -> Result<()> {
     if mode == Mode::Workspace {
         return workspace::run(store);
+    }
+    // Vidéo en cours : le même raccourci l'arrête, sans figer l'écran pour rien.
+    if matches!(mode, Mode::Video | Mode::VideoRegion) && video::request_stop(&store) {
+        return Ok(());
     }
     if !capture::has_permission() {
         capture::request_permission();

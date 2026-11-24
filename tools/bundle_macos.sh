@@ -38,6 +38,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Snappy enregistre le micro dans vos vidéos d'écran quand l'option Micro est activée.</string>
 </dict>
 </plist>
 PLIST
