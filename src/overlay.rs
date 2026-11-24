@@ -13,14 +13,21 @@
 //! - Entrée, ⌘C ou double-clic : copier ; ⌘S : enregistrer ; E : annoter ;
 //!   Échap : annuler ;
 //! - M : inclure ou non le curseur de la souris ; C : copier la couleur visée ;
-//!   H : aide.
+//!   H : aide ;
+//! - F : l'écran entier sous la souris ; O : pipette (un clic copie la couleur au
+//!   lieu de sélectionner) ; D : couleurs en hexadécimal ou en décimal.
 //!
 //! Une sélection reste sur un seul écran. Les coordonnées de travail sont des
 //! « points de base » de l'écran (pixels de l'image ÷ échelle), avant zoom.
+//!
+//! La même surcouche sert aussi, sans barre d'actions, à choisir une zone pour une
+//! autre fonction ([`pick`] : OCR, QR, vidéo, défilement) et à la pipette seule
+//! ([`pick_color`]).
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use egui::{
@@ -32,6 +39,7 @@ use image::RgbaImage;
 use crate::capture::{Capture, Shot};
 use crate::config::{LastRegion, Store};
 use crate::history;
+use crate::model::CaptureContext;
 use crate::platform::{self, ScreenRect};
 use crate::ui::{icons, keys, theme};
 
@@ -45,15 +53,82 @@ pub enum Outcome {
     Edit(PathBuf),
 }
 
+/// Réglages de la surcouche. Par défaut : le comportement historique.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Options {
+    /// Curseur inclus au départ (M l'inverse). Réglage `capture_cursor`.
+    pub with_cursor: bool,
+    /// Réticules gris sur tout l'écran à la position de la souris pendant la visée,
+    /// comme Screenpresso. Désactivé par défaut (à brancher sur un réglage).
+    pub guides: bool,
+    /// Enregistrer l'application et le titre de la fenêtre choisie d'un clic dans le
+    /// `.json` de la capture (`Doc::context`). Désactivé par défaut (réglage
+    /// `capture_context` à brancher).
+    pub capture_context: bool,
+}
+
 /// Affiche la surcouche sur tous les écrans capturés ; rend le choix de
 /// l'utilisateur. `with_cursor` : curseur inclus au départ (M l'inverse).
 pub fn run(store: Store, capture: Capture, with_cursor: bool) -> Result<Outcome> {
+    run_with(
+        store,
+        capture,
+        Options {
+            with_cursor,
+            ..Options::default()
+        },
+    )
+}
+
+/// [`run`] avec toutes les options.
+pub fn run_with(store: Store, capture: Capture, options: Options) -> Result<Outcome> {
+    Ok(match launch(store, capture, options, Flow::Actions)? {
+        Some(Exit::Outcome(outcome)) => outcome,
+        _ => Outcome::Cancelled,
+    })
+}
+
+/// Pipette seule (`Mode::ColorPicker`) : un clic copie la couleur du pixel visé
+/// (#RRGGBB, ou `rgb(r, g, b)` après D), affiche la confirmation un instant et
+/// ferme. Rend le texte copié ; `None` : annulé (Échap).
+pub fn pick_color(store: Store, capture: Capture, options: Options) -> Result<Option<String>> {
+    Ok(match launch(store, capture, options, Flow::ColorPicker)? {
+        Some(Exit::Color(text)) => Some(text),
+        _ => None,
+    })
+}
+
+/// Déroulement de la surcouche.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flow {
+    /// Sélection puis barre d'actions (copier, enregistrer, annoter).
+    Actions,
+    /// Zone rendue dès qu'elle est choisie, pour une autre fonction.
+    Pick(Purpose),
+    /// Pipette seule.
+    ColorPicker,
+}
+
+/// Fin de la surcouche.
+enum Exit {
+    Outcome(Outcome),
+    Picked(Box<Picked>),
+    Color(String),
+}
+
+/// Durée de la confirmation de la pipette seule, avant fermeture.
+const CONFIRM: Duration = Duration::from_millis(700);
+
+fn launch(store: Store, capture: Capture, options: Options, flow: Flow) -> Result<Option<Exit>> {
     anyhow::ensure!(!capture.shots.is_empty(), "aucun écran capturé");
     let root = capture.active.min(capture.shots.len() - 1);
     let root_shot = &capture.shots[root];
     let (frame, scale) = (screen_rect(root_shot), root_shot.scale);
     let viewport = overlay_builder(root_shot, &title(root));
-    let options = eframe::NativeOptions {
+    let exit = Rc::new(Cell::new(None));
+    let out = Rc::clone(&exit);
+    let settings = options;
+    let native = eframe::NativeOptions {
         viewport,
         persist_window: false,
         event_loop_builder: Some(Box::new(|builder| {
@@ -70,25 +145,19 @@ pub fn run(store: Store, capture: Capture, with_cursor: bool) -> Result<Outcome>
         })),
         ..Default::default()
     };
-    let outcome = Rc::new(Cell::new(None));
-    let out = Rc::clone(&outcome);
     eframe::run_native(
         "Snappy",
-        options,
+        native,
         Box::new(move |cc| {
             platform::make_overlay(cc, frame, scale);
             theme::apply(&cc.egui_ctx);
             Ok(Box::new(Overlay::new(
-                store,
-                capture,
-                root,
-                with_cursor,
-                out,
+                store, capture, root, settings, flow, out,
             )))
         }),
     )
     .map_err(|e| anyhow::anyhow!("surcouche : {e}"))?;
-    Ok(outcome.take().unwrap_or(Outcome::Cancelled))
+    Ok(exit.take())
 }
 
 /// Titre (unique) de la fenêtre de l'écran `i` : sert à retrouver les fenêtres
@@ -240,6 +309,12 @@ impl Screen {
     /// Fenêtre (rognée à l'écran) sous le point de base `p`, de devant à derrière,
     /// avec son libellé.
     fn window_at(&self, p: Pos2) -> Option<(Rect, String)> {
+        self.window_hit(p)
+            .map(|(r, w)| (r, window_label(&w.app, &w.title)))
+    }
+
+    /// Comme [`Screen::window_at`], avec la fenêtre elle-même (application, titre).
+    fn window_hit(&self, p: Pos2) -> Option<(Rect, &crate::capture::WindowRect)> {
         let s = self.scale();
         let screen = self.base_rect();
         self.shot.windows.iter().find_map(|w| {
@@ -248,7 +323,7 @@ impl Screen {
                 vec2(w.width as f32, w.height as f32) / s,
             )
             .intersect(screen);
-            (r.is_positive() && r.contains(p)).then(|| (r, window_label(&w.app, &w.title)))
+            (r.is_positive() && r.contains(p)).then_some((r, w))
         })
     }
 
@@ -318,8 +393,21 @@ struct Overlay {
     show_help: bool,
     /// Message temporaire (couleur copiée, curseur, erreur).
     message: Option<String>,
-    outcome: Rc<Cell<Option<Outcome>>>,
+    exit: Rc<Cell<Option<Exit>>>,
     closing: bool,
+    // --- Lot « Capture » ---
+    flow: Flow,
+    options: Options,
+    /// Pipette (O) : un clic copie la couleur au lieu de sélectionner.
+    pipette: bool,
+    /// Couleurs en décimal `rgb(r, g, b)` plutôt qu'en #RRGGBB (D).
+    decimal: bool,
+    /// Dernier écran survolé par la souris (F : l'écran entier sous la souris).
+    hover_screen: Option<usize>,
+    /// Fenêtre choisie d'un clic pour la sélection courante : application, titre.
+    clicked_window: Option<(String, String)>,
+    /// Fermeture différée (confirmation de la pipette seule).
+    close_at: Option<Instant>,
 }
 
 impl Overlay {
@@ -327,9 +415,11 @@ impl Overlay {
         store: Store,
         capture: Capture,
         root: usize,
-        show_cursor: bool,
-        outcome: Rc<Cell<Option<Outcome>>>,
+        options: Options,
+        flow: Flow,
+        exit: Rc<Cell<Option<Exit>>>,
     ) -> Self {
+        let show_cursor = options.with_cursor;
         let screens = capture
             .shots
             .into_iter()
@@ -366,8 +456,15 @@ impl Overlay {
             show_cursor,
             show_help: false,
             message: None,
-            outcome,
+            exit,
             closing: false,
+            flow,
+            options,
+            pipette: flow == Flow::ColorPicker,
+            decimal: false,
+            hover_screen: None,
+            clicked_window: None,
+            close_at: None,
         }
     }
 
@@ -392,15 +489,34 @@ impl Overlay {
     }
 
     fn finish(&mut self, ctx: &egui::Context, outcome: Outcome) {
-        self.outcome.set(Some(outcome));
+        self.close(ctx, Exit::Outcome(outcome));
+    }
+
+    fn close(&mut self, ctx: &egui::Context, exit: Exit) {
+        self.exit.set(Some(exit));
         self.closing = true;
         ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
     }
 
+    /// Contexte de la capture enregistrée en `path` (fenêtre choisie d'un clic), si
+    /// l'option est activée.
+    fn record_context(&self, path: &Path) {
+        if !self.options.capture_context {
+            return;
+        }
+        let Some((app, title)) = &self.clicked_window else {
+            return;
+        };
+        if let Err(e) = history::save_context(path, &CaptureContext::now(app, title)) {
+            log::warn!("contexte de la capture : {e:#}");
+        }
+    }
+
     fn copy(&mut self, ctx: &egui::Context) {
         let Some(img) = self.cropped() else { return };
-        if let Err(e) = history::save_capture(&self.store.captures_dir(), &img) {
-            log::warn!("historique : {e:#}");
+        match history::save_capture(&self.store.captures_dir(), &img) {
+            Ok(path) => self.record_context(&path),
+            Err(e) => log::warn!("historique : {e:#}"),
         }
         match history::copy_image(&img) {
             Ok(()) => self.finish(ctx, Outcome::Copied),
@@ -411,6 +527,7 @@ impl Overlay {
     fn save(&mut self, ctx: &egui::Context) {
         let Some(img) = self.cropped() else { return };
         let result = history::save_capture(&self.store.captures_dir(), &img).and_then(|original| {
+            self.record_context(&original);
             let dir = self.store.save_dir(&self.store.load());
             history::export(&dir, &original, &img)
         });
@@ -423,8 +540,48 @@ impl Overlay {
     fn edit(&mut self, ctx: &egui::Context) {
         let Some(img) = self.cropped() else { return };
         match history::save_capture(&self.store.captures_dir(), &img) {
-            Ok(path) => self.finish(ctx, Outcome::Edit(path)),
+            Ok(path) => {
+                self.record_context(&path);
+                self.finish(ctx, Outcome::Edit(path));
+            }
             Err(e) => self.message = Some(format!("{e:#}")),
+        }
+    }
+
+    /// Mode [`pick`] : rend la sélection courante et ferme.
+    fn deliver_pick(&mut self, ctx: &egui::Context) {
+        let Some(sel) = self.selection else { return };
+        let shot = &self.screens[sel.screen].shot;
+        match picked_from(
+            shot,
+            sel.screen,
+            sel.rect,
+            self.show_cursor,
+            self.clicked_window.clone(),
+        ) {
+            Some(picked) => self.close(ctx, Exit::Picked(Box::new(picked))),
+            None => self.selection = None,
+        }
+    }
+
+    /// Couleur du pixel sous `pos` (point de la fenêtre de l'écran `i`), au format
+    /// choisi (D).
+    fn color_at(&self, i: usize, pos: Pos2) -> Option<String> {
+        let screen = &self.screens[i];
+        let px = screen.pixel_at(screen.view.to_base(pos))?;
+        Some(color_text(px, self.decimal))
+    }
+
+    /// Pipette : copie la couleur visée ; la pipette seule ferme peu après.
+    fn pipette_click(&mut self, ctx: &egui::Context, i: usize, pos: Pos2) {
+        let Some(text) = self.color_at(i, pos) else {
+            return;
+        };
+        ctx.copy_text(text.clone());
+        self.message = Some(format!("Couleur {text} copiée"));
+        if self.flow == Flow::ColorPicker {
+            self.exit.set(Some(Exit::Color(text)));
+            self.close_at = Some(Instant::now() + CONFIRM);
         }
     }
 
@@ -441,6 +598,9 @@ impl Overlay {
             help: bool,
             reset_zoom: bool,
             nudge: Vec2,
+            full_screen: bool,
+            pipette: bool,
+            decimal: bool,
         }
         let k = ctx.input_mut(|inp| {
             let nudge = [
@@ -465,6 +625,9 @@ impl Overlay {
                 help: inp.consume_key(Modifiers::NONE, Key::H),
                 reset_zoom: inp.consume_key(Modifiers::NONE, Key::Num0),
                 nudge,
+                full_screen: inp.consume_key(Modifiers::NONE, Key::F),
+                pipette: inp.consume_key(Modifiers::NONE, Key::O),
+                decimal: inp.consume_key(Modifiers::NONE, Key::D),
             }
         });
         if k.esc {
@@ -473,8 +636,40 @@ impl Overlay {
             }
             return;
         }
+        if k.decimal {
+            self.decimal = !self.decimal;
+            self.message = Some(if self.decimal {
+                "Couleurs en décimal : rgb(r, g, b)".into()
+            } else {
+                "Couleurs en hexadécimal : #RRGGBB".into()
+            });
+        }
         if k.hex {
             self.copy_hex_under_pointer(ctx, i);
+        }
+        if k.pipette && self.flow == Flow::Actions {
+            self.pipette = !self.pipette;
+            self.selection = None;
+            self.drag = None;
+            self.clicked_window = None;
+            self.message = Some(if self.pipette {
+                "Pipette : clic pour copier la couleur  ·  O : quitter la pipette".into()
+            } else {
+                "Pipette désactivée".into()
+            });
+        }
+        if k.full_screen && !self.pipette {
+            let s = self.hover_screen.unwrap_or(i);
+            self.selection = Some(Selection {
+                screen: s,
+                rect: self.screens[s].base_rect(),
+            });
+            self.drag = None;
+            self.clicked_window = None;
+            if matches!(self.flow, Flow::Pick(_)) {
+                self.deliver_pick(ctx);
+                return;
+            }
         }
         if k.cursor {
             self.show_cursor = !self.show_cursor;
@@ -512,11 +707,9 @@ impl Overlay {
         let Some(pos) = ctx.pointer_latest_pos() else {
             return;
         };
-        let screen = &self.screens[i];
-        if let Some(px) = screen.pixel_at(screen.view.to_base(pos)) {
-            let hex = format!("#{:02X}{:02X}{:02X}", px[0], px[1], px[2]);
-            ctx.copy_text(hex.clone());
-            self.message = Some(format!("Couleur {hex} copiée"));
+        if let Some(text) = self.color_at(i, pos) {
+            ctx.copy_text(text.clone());
+            self.message = Some(format!("Couleur {text} copiée"));
         }
     }
 
@@ -546,6 +739,17 @@ impl Overlay {
         let pointer = response
             .interact_pointer_pos()
             .or_else(|| ctx.pointer_latest_pos());
+        // Pipette : un clic copie la couleur, rien ne se sélectionne.
+        if self.pipette {
+            if response.clicked()
+                && let Some(p) = pointer
+            {
+                self.pipette_click(ctx, i, p);
+            }
+            ctx.set_cursor_icon(CursorIcon::Crosshair);
+            return;
+        }
+        let picking = matches!(self.flow, Flow::Pick(_));
         let sel_here = self.selection.filter(|s| s.screen == i);
         let sel_screen = sel_here.map(|s| view.rect(s.rect));
 
@@ -574,6 +778,9 @@ impl Overlay {
                 },
                 _ => Drag::New { origin: base },
             };
+            if matches!(drag, Drag::New { .. }) {
+                self.clicked_window = None;
+            }
             self.drag = Some((i, drag));
         }
         if let (Some((di, drag)), Some(p)) = (self.drag, pointer)
@@ -595,7 +802,8 @@ impl Overlay {
             }
         }
         if response.drag_stopped() {
-            if let Some((_, Drag::New { .. })) = self.drag
+            let new = matches!(self.drag, Some((_, Drag::New { .. })));
+            if new
                 && self
                     .selection
                     .is_some_and(|s| s.rect.width().max(s.rect.height()) * view.zoom < CLICK_SLOP)
@@ -603,6 +811,11 @@ impl Overlay {
                 self.selection = None;
             }
             self.drag = None;
+            // Mode « pick » : la zone part dès qu'on relâche.
+            if picking && new && self.selection.is_some() {
+                self.deliver_pick(ctx);
+                return;
+            }
         }
         // Clic hors de la sélection (ou sans sélection) : la fenêtre visée, sinon
         // l'écran entier.
@@ -612,6 +825,11 @@ impl Overlay {
         {
             let rect = self.target_at(i, p).map_or(bounds, |(r, _)| r);
             self.selection = Some(Selection { screen: i, rect });
+            self.clicked_window = self.clicked_window_at(i, p);
+            if picking {
+                self.deliver_pick(ctx);
+                return;
+            }
         }
 
         // Curseur.
@@ -639,6 +857,18 @@ impl Overlay {
         screen.window_at(screen.view.to_base(p))
     }
 
+    /// Application et titre de la fenêtre qu'un clic en `p` choisit (rien pour
+    /// l'écran entier).
+    fn clicked_window_at(&self, i: usize, p: Pos2) -> Option<(String, String)> {
+        if p.y <= TOP_EDGE {
+            return None;
+        }
+        let screen = &self.screens[i];
+        screen
+            .window_hit(screen.view.to_base(p))
+            .map(|(_, w)| (w.app.clone(), w.title.clone()))
+    }
+
     fn paint(&self, painter: &egui::Painter, i: usize, window: Rect, pointer: Option<Pos2>) {
         let screen = &self.screens[i];
         let view = screen.view;
@@ -650,6 +880,11 @@ impl Overlay {
             && let Some((Some(tex), at)) = &screen.cursor
         {
             painter.image(tex.id(), view.rect(*at), uv, Color32::WHITE);
+        }
+        // Pipette : l'écran tel quel, sans assombrissement qui fausserait les
+        // couleurs à l'œil (réticules gris : voir `screen_ui`).
+        if self.pipette {
+            return;
         }
         match self.selection {
             None => {
@@ -668,7 +903,7 @@ impl Overlay {
                     );
                     let (w, h) = screen.pixel_size(target);
                     pill(painter, r, window, &format!("{label}  ·  {w} × {h}"));
-                } else {
+                } else if !self.options.guides {
                     // Repères en croix sur tout l'écran.
                     let guide = Stroke::new(1.0, theme::ACCENT_2.gamma_multiply(0.5));
                     painter.hline(window.x_range(), p.y, guide);
@@ -761,7 +996,12 @@ impl Overlay {
             StrokeKind::Outside,
         );
         if let Some(px) = screen.pixel_at(base) {
-            let hex = format!("#{:02X}{:02X}{:02X}  ·  C pour copier", px[0], px[1], px[2]);
+            let how = if self.pipette {
+                "clic pour copier"
+            } else {
+                "C pour copier"
+            };
+            let hex = format!("{}  ·  {how}", color_text(px, self.decimal));
             let font = FontId::new(theme::SIZE_XS + 1.0, egui::FontFamily::Proportional);
             // Fond à la largeur du texte (pastille de couleur + marges), au moins celle
             // de la loupe, et toujours dans l'écran.
@@ -848,7 +1088,7 @@ impl Overlay {
         } else {
             vec![match &self.message {
                 Some(m) => m.clone(),
-                None => "Glisse pour sélectionner  ·  clic : la fenêtre encadrée  ·  H : aide  ·  Échap : annuler".into(),
+                None => self.default_hint(),
             }]
         };
         egui::Area::new(egui::Id::unique(("hint", i)))
@@ -865,6 +1105,22 @@ impl Overlay {
             });
     }
 
+    /// Consigne du bandeau quand il n'y a pas de message.
+    fn default_hint(&self) -> String {
+        match (self.flow, self.pipette) {
+            (Flow::ColorPicker, _) => {
+                "Clique pour copier la couleur  ·  D : hexadécimal ou décimal  ·  Échap : annuler"
+                    .into()
+            }
+            (_, true) => "Pipette : clic pour copier la couleur  ·  D : hexadécimal ou décimal  ·  O : quitter la pipette".into(),
+            (Flow::Pick(purpose), false) => format!(
+                "{}  ·  clic : la fenêtre encadrée  ·  F : l'écran entier  ·  Échap : annuler",
+                purpose_hint(purpose)
+            ),
+            (Flow::Actions, false) => "Glisse pour sélectionner  ·  clic : la fenêtre encadrée  ·  H : aide  ·  Échap : annuler".into(),
+        }
+    }
+
     /// Tout ce qui concerne l'écran `i`, dans sa fenêtre.
     fn screen_ui(&mut self, ui: &mut egui::Ui, i: usize) {
         let ctx = ui.ctx().clone();
@@ -878,32 +1134,51 @@ impl Overlay {
                 ctx.request_repaint();
             }
         }
-        self.handle_keys(&ctx, i);
+        // Pendant la confirmation de la pipette seule, plus aucune saisie.
+        let confirming = self.close_at.is_some();
+        if !confirming {
+            self.handle_keys(&ctx, i);
+        }
         if self.closing {
             return;
         }
         let window = ctx.content_rect();
-        self.handle_zoom(&ctx, i, window);
-        let response = ui.interact(
-            window,
-            egui::Id::unique(("canvas", i)),
-            Sense::click_and_drag(),
-        );
-        self.handle_pointer(&ctx, i, &response);
+        if !confirming {
+            self.handle_zoom(&ctx, i, window);
+            let response = ui.interact(
+                window,
+                egui::Id::unique(("canvas", i)),
+                Sense::click_and_drag(),
+            );
+            self.handle_pointer(&ctx, i, &response);
+        }
         if self.closing {
             return;
         }
         let pointer = ctx.pointer_hover_pos();
+        if pointer.is_some() {
+            self.hover_screen = Some(i);
+        }
         let painter = ui.painter_at(window);
         self.paint(&painter, i, window, pointer);
-        let aiming =
-            self.selection.is_none() || matches!(self.drag, Some((d, Drag::New { .. })) if d == i);
+        let aiming = self.pipette
+            || self.selection.is_none()
+            || matches!(self.drag, Some((d, Drag::New { .. })) if d == i);
+        // Réticules gris : toujours avec la pipette, en option sinon.
+        if aiming
+            && (self.pipette || self.options.guides)
+            && let Some(p) = pointer
+        {
+            paint_guides(&painter, window, p);
+        }
         if aiming && let Some(p) = pointer {
             self.paint_loupe(&painter, i, window, p);
         }
         if let Some(sel) = self.selection
             && sel.screen == i
             && self.drag.is_none()
+            && self.flow == Flow::Actions
+            && !self.pipette
         {
             let r = self.screens[i].view.rect(sel.rect);
             self.action_bar(&ctx, i, r, window);
@@ -927,6 +1202,15 @@ impl eframe::App for Overlay {
             return;
         }
         let ctx = ui.ctx().clone();
+        if let Some(at) = self.close_at {
+            let now = Instant::now();
+            if now >= at {
+                self.closing = true;
+                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+                return;
+            }
+            ctx.request_repaint_after(at - now);
+        }
         self.screen_ui(ui, self.root);
         for i in 0..self.screens.len() {
             if i == self.root || self.closing {
@@ -972,6 +1256,7 @@ fn help_lines() -> Vec<String> {
         "Poignées : redimensionner  ·  flèches : déplacer (Maj : ×10)".into(),
         "Molette : zoomer  ·  0 : taille réelle".into(),
         "M : inclure le curseur  ·  C : copier la couleur visée".into(),
+        "F : l'écran entier  ·  O : pipette  ·  D : couleurs en hexadécimal ou décimal".into(),
         format!(
             "Entrée, {} ou double-clic : copier  ·  {} : enregistrer  ·  E : annoter",
             keys::cmd(false, "C"),
@@ -979,6 +1264,62 @@ fn help_lines() -> Vec<String> {
         ),
         "Échap : annuler  ·  H : masquer l'aide".into(),
     ]
+}
+
+// --- Lot « Capture » ---
+
+/// Réticules gris (Screenpresso) : une ligne horizontale et une verticale sur tout
+/// l'écran, à la position de la souris.
+fn paint_guides(painter: &egui::Painter, window: Rect, p: Pos2) {
+    let guide = Stroke::new(1.0, Color32::from_rgba_unmultiplied(190, 190, 190, 150));
+    painter.hline(window.x_range(), p.y, guide);
+    painter.vline(p.x, window.y_range(), guide);
+}
+
+/// Couleur d'un pixel : `#RRGGBB`, ou `rgb(r, g, b)` en décimal.
+fn color_text(px: [u8; 4], decimal: bool) -> String {
+    let [r, g, b, _] = px;
+    if decimal {
+        format!("rgb({r}, {g}, {b})")
+    } else {
+        format!("#{r:02X}{g:02X}{b:02X}")
+    }
+}
+
+/// Consigne du bandeau en mode [`pick`].
+fn purpose_hint(purpose: Purpose) -> &'static str {
+    match purpose {
+        Purpose::Ocr => "Sélectionne le texte à copier",
+        Purpose::Qr => "Sélectionne le QR code",
+        Purpose::Video => "Sélectionne la zone à filmer",
+        Purpose::Scrolling => "Sélectionne la zone à faire défiler",
+    }
+}
+
+/// Zone `rect` (points de base) de l'écran `screen` en [`Picked`]. `None` si vide.
+fn picked_from(
+    shot: &Shot,
+    screen: usize,
+    rect: Rect,
+    with_cursor: bool,
+    window: Option<(String, String)>,
+) -> Option<Picked> {
+    let (iw, ih) = shot.image.dimensions();
+    let (x, y, width, height) = pixel_rect(rect, shot.scale as f32, iw, ih)?;
+    let (app, title) = window.unzip();
+    Some(Picked {
+        image: shot.region(x, y, width, height, with_cursor),
+        screen,
+        display_id: shot.display_id,
+        frame: shot.frame,
+        scale: shot.scale,
+        x,
+        y,
+        width,
+        height,
+        app,
+        title,
+    })
 }
 
 /// Sélection en pixels, bornée à l'image. `None` si vide.
@@ -1172,6 +1513,68 @@ mod tests {
     }
 
     #[test]
+    fn colors_are_written_in_hex_or_decimal() {
+        assert_eq!(color_text([255, 8, 171, 255], false), "#FF08AB");
+        assert_eq!(color_text([0, 0, 0, 0], false), "#000000");
+        assert_eq!(color_text([255, 8, 171, 255], true), "rgb(255, 8, 171)");
+    }
+
+    #[test]
+    fn each_purpose_has_its_hint() {
+        assert_eq!(purpose_hint(Purpose::Ocr), "Sélectionne le texte à copier");
+        assert_eq!(purpose_hint(Purpose::Qr), "Sélectionne le QR code");
+        assert_eq!(purpose_hint(Purpose::Video), "Sélectionne la zone à filmer");
+        assert_eq!(
+            purpose_hint(Purpose::Scrolling),
+            "Sélectionne la zone à faire défiler"
+        );
+    }
+
+    #[test]
+    fn picked_zone_is_in_image_pixels() {
+        let image = RgbaImage::from_fn(400, 200, |x, y| image::Rgba([x as u8, y as u8, 0, 255]));
+        let red = image::Rgba([255, 0, 0, 255]);
+        let shot = Shot {
+            image,
+            frame: Frame {
+                x: -200.0,
+                y: 0.0,
+                width: 200.0,
+                height: 100.0,
+            },
+            scale: 2.0,
+            display_id: 7,
+            windows: Vec::new(),
+            cursor: Some(crate::capture::CursorPatch {
+                image: RgbaImage::from_pixel(2, 2, red),
+                x: 22,
+                y: 42,
+            }),
+        };
+        // Points de base (10, 20)–(60, 45) → pixels (20, 40) 100 × 50.
+        let rect = Rect::from_min_max(pos2(10.0, 20.0), pos2(60.0, 45.0));
+        let window = Some(("Safari".to_owned(), "Accueil".to_owned()));
+        let p = picked_from(&shot, 1, rect, false, window).unwrap();
+        assert_eq!((p.x, p.y, p.width, p.height), (20, 40, 100, 50));
+        assert_eq!(p.image.dimensions(), (100, 50));
+        assert_eq!(p.image.get_pixel(0, 0).0, [20, 40, 0, 255]);
+        assert_eq!((p.screen, p.display_id, p.scale), (1, 7, 2.0));
+        assert_eq!(p.frame, shot.frame);
+        assert_eq!(
+            (p.app.as_deref(), p.title.as_deref()),
+            (Some("Safari"), Some("Accueil"))
+        );
+        // Curseur demandé : posé dans la zone ; zone tirée à l'envers : même résultat.
+        let reversed = Rect::from_two_pos(pos2(60.0, 45.0), pos2(10.0, 20.0));
+        let p = picked_from(&shot, 1, reversed, true, None).unwrap();
+        assert_eq!(*p.image.get_pixel(2, 2), red);
+        assert_eq!((p.app, p.title), (None, None));
+        // Zone vide.
+        let empty = Rect::from_min_max(pos2(10.0, 20.0), pos2(10.0, 45.0));
+        assert!(picked_from(&shot, 0, empty, false, None).is_none());
+    }
+
+    #[test]
     fn window_labels_are_short() {
         assert_eq!(window_label("", ""), "Fenêtre");
         assert_eq!(window_label("Safari", "Accueil"), "Safari — Accueil");
@@ -1213,15 +1616,39 @@ pub struct Picked {
 }
 
 /// Sélection d'une zone sur les écrans figés, rendue dès que l'utilisateur relâche
-/// la souris (ou clique une fenêtre). `None` : annulé (Échap).
-///
-/// Socle : à compléter par le lot « Capture ».
+/// la souris (ou clique une fenêtre, ou appuie sur F pour l'écran entier), sans
+/// barre d'actions. Le bandeau du bas rappelle le but (`purpose`). `None` : annulé
+/// (Échap). Rien n'est enregistré dans l'historique.
 #[allow(dead_code)]
 pub fn pick(
-    _store: Store,
-    _capture: Capture,
-    _with_cursor: bool,
+    store: Store,
+    capture: Capture,
+    with_cursor: bool,
     purpose: Purpose,
 ) -> Result<Option<Picked>> {
-    anyhow::bail!("sélection pour {purpose:?} pas encore disponible")
+    pick_with(
+        store,
+        capture,
+        Options {
+            with_cursor,
+            ..Options::default()
+        },
+        purpose,
+    )
+}
+
+/// [`pick`] avec toutes les options (réticules…).
+#[allow(dead_code)]
+pub fn pick_with(
+    store: Store,
+    capture: Capture,
+    options: Options,
+    purpose: Purpose,
+) -> Result<Option<Picked>> {
+    Ok(
+        match launch(store, capture, options, Flow::Pick(purpose))? {
+            Some(Exit::Picked(picked)) => Some(*picked),
+            _ => None,
+        },
+    )
 }

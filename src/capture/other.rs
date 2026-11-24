@@ -24,3 +24,8 @@ pub fn request_permission() -> bool {
 pub fn capture_all() -> Result<super::Capture> {
     bail!("capture d'écran pas encore prise en charge sur ce système")
 }
+
+/// Fenêtre au premier plan : pas encore disponible sur ce système.
+pub fn front_window() -> Option<super::FrontWindow> {
+    None
+}

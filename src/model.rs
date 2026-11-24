@@ -694,6 +694,37 @@ pub fn bubble_box(at: Pt, text: &str, size: f32, text_size: &impl TextSize) -> B
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Doc {
     pub annotations: Vec<Annotation>,
+    // --- Lot « Capture » ---
+    /// Contexte de la capture (§ 3.1 « Save capture context ») : application et
+    /// fenêtre d'origine. Seulement si le réglage est activé ; absent des fichiers
+    /// sinon (format inchangé).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<CaptureContext>,
+}
+
+// --- Lot « Capture » ---
+
+/// D'où vient une capture : application, titre de la fenêtre, date.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CaptureContext {
+    pub app: String,
+    pub title: String,
+    /// Date et heure locales de la capture, ISO 8601 (`2026-11-24T10:02:37+01:00`).
+    pub date: String,
+}
+
+impl CaptureContext {
+    /// Contexte daté de maintenant.
+    pub fn now(app: &str, title: &str) -> Self {
+        Self {
+            app: app.trim().to_owned(),
+            title: title.trim().to_owned(),
+            date: jiff::ZonedDateTime::now()
+                .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string(),
+        }
+    }
 }
 
 impl Doc {
@@ -886,6 +917,7 @@ mod tests {
                 size: 24.0,
                 tail: Pt::new(0.0, 80.0),
             })],
+            ..Default::default()
         };
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.contains(r#""kind":"bubble""#), "{json}");
