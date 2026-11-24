@@ -5,7 +5,9 @@
 //! l'agent reste minuscule en mémoire, et la mémoire d'une capture (image Retina,
 //! fenêtres) est rendue au système dès qu'elle se termine. Les réglages
 //! (`snappy --settings`) aussi, un seul à la fois : l'agent garde le processus et le
-//! repasse au premier plan si on les redemande.
+//! repasse au premier plan si on les redemande. L'espace de travail aussi
+//! (`snappy --capture workspace`) : un seul à la fois, à part des captures (il ne
+//! les bloque pas), ouvert et refermé par un clic gauche sur l'icône.
 //!
 //! Répartition :
 //! - **thread principal** : boucle winit sans fenêtre (pas d'icône dans le Dock),
@@ -154,6 +156,10 @@ pub struct Launcher {
     /// Fenêtre des réglages, une seule à la fois.
     settings: Mutex<Option<Child>>,
     proxy: EventLoopProxy<UiEvent>,
+    /// Fenêtre « Espace de travail », une seule à la fois (lot « Espace de travail »).
+    workspace: Mutex<Option<Child>>,
+    /// Dernier rectangle connu de l'icône (raccourci, menu : même place qu'au clic).
+    anchor: Mutex<Option<crate::workspace::Anchor>>,
 }
 
 impl Launcher {
@@ -165,12 +171,19 @@ impl Launcher {
             waiting: AtomicBool::new(false),
             settings: Mutex::new(None),
             proxy,
+            workspace: Mutex::new(None),
+            anchor: Mutex::new(None),
         })
     }
 
     /// Démarre une capture, tout de suite ou après `delay` secondes (compte à
     /// rebours dans la barre des menus), sauf si une autre est déjà en cours.
     pub fn capture(self: &Arc<Self>, mode: Mode, delay: u32) -> Result<()> {
+        // L'espace de travail est une fenêtre, pas une capture : il ne prend pas la
+        // place d'une capture en cours.
+        if mode == Mode::Workspace {
+            return self.workspace(None, false);
+        }
         // Capture différée (raccourci) : une zone, après le délai de la config.
         let (mode, delay) = match mode {
             Mode::Delayed if delay == 0 => (Mode::Region, self.delay_seconds()),
@@ -250,6 +263,105 @@ impl Launcher {
     }
 }
 
+impl Launcher {
+    /// Ouvre l'espace de travail près de l'icône (`anchor`), ou le passe au premier
+    /// plan s'il est déjà ouvert ; avec `toggle` (clic gauche sur l'icône), le
+    /// referme s'il est ouvert.
+    pub fn workspace(&self, anchor: Option<crate::workspace::Anchor>, toggle: bool) -> Result<()> {
+        let mut workspace = self.workspace.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(child) = workspace.as_mut()
+            && matches!(child.try_wait(), Ok(None))
+        {
+            if toggle {
+                // Rien à enregistrer côté fenêtre : ses préférences sont écrites à
+                // chaque changement.
+                let _ = child.kill();
+                let _ = child.wait();
+                *workspace = None;
+                log::info!("espace de travail fermé");
+            } else {
+                foreground::bring_to_front(child.id());
+            }
+            return Ok(());
+        }
+        let anchor = {
+            let mut last = self.anchor.lock().unwrap_or_else(|e| e.into_inner());
+            if anchor.is_some() {
+                *last = anchor;
+            }
+            *last
+        };
+        crate::platform::allow_foreground();
+        let mut command = Command::new(&self.exe);
+        command.args(["--capture", Mode::Workspace.arg()]);
+        if let Some(anchor) = anchor {
+            command.env(crate::workspace::ANCHOR_ENV, anchor.to_env());
+        }
+        let child = command
+            .spawn()
+            .context("ouverture de l'espace de travail")?;
+        log::info!("espace de travail ouvert (pid {})", child.id());
+        *workspace = Some(child);
+        Ok(())
+    }
+}
+
+/// Aide et « À propos » : une boîte de dialogue native, sur un fil à part pour que
+/// le menu se referme tout de suite.
+fn show_info(title: &'static str, text: String) {
+    let spawned = thread::Builder::new()
+        .name("snappy-info".into())
+        .spawn(move || {
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Info)
+                .set_title(title)
+                .set_description(text)
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show();
+        });
+    if let Err(e) = spawned {
+        log::warn!("fenêtre d'information : {e}");
+    }
+}
+
+/// Texte de l'aide, avec les raccourcis de la config.
+fn help_text(config: &Config) -> String {
+    let shortcut = |mode: Mode| {
+        hotkeys::label_of(config.hotkey(mode)).unwrap_or_else(|| "aucun raccourci".into())
+    };
+    use crate::ui::keys;
+    format!(
+        "Icône de Snappy : clic gauche pour l'espace de travail (vos captures), clic \
+         droit pour le menu.\n\n\
+         Capturer une zone : {}\nCapturer l'écran : {}\nCapturer la zone précédente : {}\n\
+         Espace de travail : {}\n(raccourcis à changer dans Réglages…)\n\n\
+         Dans l'espace de travail : double-clic ou Entrée pour éditer, Espace pour \
+         l'aperçu, F2 pour renommer, {} pour mettre à la Corbeille, {} pour copier \
+         l'image, {} pour copier son chemin, {} et {} pour la taille des vignettes, F10 \
+         pour les espaces de travail.\n\n\
+         Ligne de commande : snappy --help",
+        shortcut(Mode::Region),
+        shortcut(Mode::Screen),
+        shortcut(Mode::Previous),
+        shortcut(Mode::Workspace),
+        keys::DELETE,
+        keys::cmd(false, "C"),
+        keys::cmd(true, "C"),
+        keys::cmd(false, "+"),
+        keys::cmd(false, "−"),
+    )
+}
+
+fn about_text(store: &Store) -> String {
+    format!(
+        "Snappy {}\nCapture d'écran légère, annotations non destructives.\n\n\
+         Licence MIT. Icônes Lucide (ISC/MIT), polices Outfit et Unbounded (OFL).\n\n\
+         Captures : {}",
+        env!("CARGO_PKG_VERSION"),
+        store.captures_dir().display()
+    )
+}
+
 /// Partie « thread principal » de l'agent.
 struct App {
     store: Store,
@@ -298,10 +410,23 @@ impl App {
             MenuChoice::Quit => {
                 let _ = proxy.send_event(UiEvent::Quit);
             }
+            MenuChoice::Help => show_info("Aide de Snappy", help_text(&store.load())),
+            MenuChoice::About => show_info("À propos de Snappy", about_text(&store)),
+        };
+        let launcher = Arc::clone(&self.launcher);
+        let on_left_click = move |anchor| {
+            if let Err(e) = launcher.workspace(anchor, true) {
+                log::error!("{e:#}");
+            }
         };
         let menu = self.menu_state(&config);
-        match Tray::new(&menu, on_choice) {
+        match Tray::new(&menu, on_choice, on_left_click) {
             Ok(tray) => {
+                *self
+                    .launcher
+                    .anchor
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = tray.anchor();
                 self.tray = Some(tray);
                 self.menu = Some(menu);
             }
