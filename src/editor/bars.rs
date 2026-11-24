@@ -77,43 +77,51 @@ impl Editor {
                 }
             }
             ui.separator();
-            self.presets_bar(ui);
             self.image_button(ui);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let copy = egui::Button::new(
-                    RichText::new(format!("{}  Copier", icons::COPY))
-                        .size(theme::SIZE_M)
-                        .color(theme::ON_ACCENT_2),
-                )
-                .fill(theme::ACCENT_2);
-                if ui.add(copy).on_hover_text(keys::cmd(false, "C")).clicked() {
-                    self.copy();
-                }
-                if ui
-                    .button(
-                        RichText::new(format!("{}  Enregistrer", icons::SAVE)).size(theme::SIZE_M),
-                    )
-                    .on_hover_text(format!(
-                        "{} : image annotée dans le dossier d'enregistrement",
-                        keys::cmd(false, "S")
-                    ))
-                    .clicked()
-                {
-                    self.save();
-                }
-                let target = self
-                    .last_export
-                    .clone()
-                    .unwrap_or_else(|| self.path.clone());
-                if ui
-                    .button(icon(icons::FOLDER))
-                    .on_hover_text(keys::REVEAL)
-                    .clicked()
-                {
-                    history::reveal(&target);
-                }
-            });
+            // Favoris : ils défilent dans la place qui reste.
+            egui::ScrollArea::horizontal()
+                .id_salt("favoris")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| self.presets_bar(ui));
+                });
         });
+    }
+
+    /// Dossier, Enregistrer et Copier (dans la barre de titre, à gauche de
+    /// « Valider », pour laisser toute la largeur aux outils). À appeler dans une
+    /// mise en page de droite à gauche.
+    pub(super) fn export_buttons(&mut self, ui: &mut Ui) {
+        let copy = egui::Button::new(
+            RichText::new(format!("{}  Copier", icons::COPY))
+                .size(theme::SIZE_M)
+                .color(theme::ON_ACCENT_2),
+        )
+        .fill(theme::ACCENT_2);
+        if ui.add(copy).on_hover_text(keys::cmd(false, "C")).clicked() {
+            self.copy();
+        }
+        if ui
+            .button(RichText::new(format!("{}  Enregistrer", icons::SAVE)).size(theme::SIZE_M))
+            .on_hover_text(format!(
+                "{} : image annotée dans le dossier d'enregistrement",
+                keys::cmd(false, "S")
+            ))
+            .clicked()
+        {
+            self.save();
+        }
+        let target = self
+            .last_export
+            .clone()
+            .unwrap_or_else(|| self.path.clone());
+        if ui
+            .button(icon(icons::FOLDER))
+            .on_hover_text(keys::REVEAL)
+            .clicked()
+        {
+            history::reveal(&target);
+        }
     }
 
     pub(super) fn options_bar(&mut self, ui: &mut Ui) {

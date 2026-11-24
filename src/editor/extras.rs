@@ -1215,6 +1215,8 @@ impl Editor {
                 {
                     self.validate(&ctx);
                 }
+                ui.add_space(8.0);
+                self.export_buttons(ui);
             });
         });
     }
