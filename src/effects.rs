@@ -658,13 +658,49 @@ pub fn auto_canvas(
 
 /// Export : image de travail + annotations (zone de travail automatique comprise),
 /// puis bordure et effets. Sans réglage de ce lot : exactement [`render::render`].
+#[allow(dead_code)]
 pub fn apply_export(base: &RgbaImage, doc: &Doc) -> RgbaImage {
+    apply_export_with(base, doc, None)
+}
+
+/// Une capture du disque telle qu'elle s'exporte : retouches, annotations (images
+/// insérées comprises), bandeau des propriétés, bordure et effets. Sans rien de tout
+/// cela, l'image d'origine telle quelle. Seul aplatissement à utiliser hors de
+/// l'éditeur (espace de travail, partage, presse-papiers, vignettes).
+pub fn flatten_file(path: &std::path::Path) -> anyhow::Result<RgbaImage> {
+    use anyhow::Context;
+    let base = image::open(path)
+        .with_context(|| format!("ouverture de {}", path.display()))?
+        .to_rgba8();
+    let doc = crate::history::load_doc(path);
+    if doc == Doc::default() {
+        return Ok(base);
+    }
+    let base = working_base(base, &doc.edits);
+    Ok(apply_export_with(
+        &base,
+        &doc,
+        Some(&render::assets_dir(path)),
+    ))
+}
+
+/// Comme [`apply_export`], avec le dossier des images insérées (`<capture>.assets/`)
+/// et le bandeau des propriétés (titre, description) du lot « annotations ».
+pub fn apply_export_with(
+    base: &RgbaImage,
+    doc: &Doc,
+    assets: Option<&std::path::Path>,
+) -> RgbaImage {
     let img = match doc.canvas_auto {
         Some(background) => {
             let (grown, annotations) = auto_canvas(base, &doc.annotations, background);
-            render::render(&grown, &annotations)
+            let grown_doc = Doc {
+                annotations,
+                ..doc.clone()
+            };
+            render::render_doc(&grown, &grown_doc, assets)
         }
-        None => render::render(base, &doc.annotations),
+        None => render::render_doc(base, doc, assets),
     };
     match &doc.border {
         Some(fx) if !fx.is_noop() => apply_border(&img, fx),

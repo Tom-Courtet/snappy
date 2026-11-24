@@ -445,13 +445,7 @@ pub fn copy_text(text: &str) -> Result<()> {
 
 /// Image avec ses annotations, aplatie.
 pub fn flattened(path: &Path) -> Result<RgbaImage> {
-    let base = history::read_png(path)?;
-    let doc = history::load_doc(path);
-    Ok(if doc.annotations.is_empty() {
-        base
-    } else {
-        crate::render::render(&base, &doc.annotations)
-    })
+    crate::effects::flatten_file(path)
 }
 
 /// Formats proposés par « Enregistrer sous… » : (nom, extensions).

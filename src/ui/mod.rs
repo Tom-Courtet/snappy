@@ -21,6 +21,7 @@ mod tests {
         ("editor/tools.rs", include_str!("../editor/tools.rs")),
         ("editor/prefs.rs", include_str!("../editor/prefs.rs")),
         ("editor/preview.rs", include_str!("../editor/preview.rs")),
+        ("editor/extras.rs", include_str!("../editor/extras.rs")),
         ("render.rs", include_str!("../render.rs")),
     ];
 

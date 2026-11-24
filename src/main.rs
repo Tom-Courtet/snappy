@@ -286,7 +286,11 @@ fn open_editor(path: &std::path::Path) -> Result<()> {
 fn export(input: &std::path::Path, output: &std::path::Path) -> Result<()> {
     let base = history::read_png(input)?;
     let doc = history::load_doc(input);
-    let img = effects::apply_export(&effects::working_base(base, &doc.edits), &doc);
+    let img = effects::apply_export_with(
+        &effects::working_base(base, &doc.edits),
+        &doc,
+        Some(&render::assets_dir(input)),
+    );
     history::write_png(output, &img)?;
     effects::write_dpi(output, doc.dpi);
     println!(

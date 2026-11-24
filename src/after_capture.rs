@@ -152,15 +152,7 @@ fn recopy(config: &Config, path: &Path) {
 
 /// Image du fichier avec ses annotations.
 fn flattened(path: &Path) -> Result<RgbaImage> {
-    let base = image::open(path)
-        .with_context(|| format!("ouverture de {}", path.display()))?
-        .to_rgba8();
-    let doc = history::load_doc(path);
-    Ok(if doc.annotations.is_empty() {
-        base
-    } else {
-        render::render(&base, &doc.annotations)
-    })
+    crate::effects::flatten_file(path)
 }
 
 /// La capture que la surcouche vient d'enregistrer dans l'historique (la plus

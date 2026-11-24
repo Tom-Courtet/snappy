@@ -146,7 +146,9 @@ pub fn paint(painter: &Painter, view: View, ann: &Annotation) {
             tail,
         } => {
             let b = crate::model::bubble_box(*at, text, *size, &render::text_size);
-            pointer(painter, view, b.center(), *tail, size * 0.9, color);
+            if ann.bubble == crate::model::BubbleKind::Tail {
+                pointer(painter, view, b.center(), *tail, size * 0.9, color);
+            }
             painter.rect_filled(
                 view.rect(b),
                 CornerRadius::same((size * 0.45 * s).min(255.0) as u8),
@@ -162,18 +164,34 @@ pub fn paint(painter: &Painter, view: View, ann: &Annotation) {
             );
         }
         Shape::Step { at, number, tail } => {
+            use crate::model::StepTail;
             let r = step_radius(ann.width);
-            if let Some(t) = tail {
-                pointer(painter, view, *at, *t, r * 1.1, color);
+            match (ann.step_tail, tail) {
+                (StepTail::Pin, _) => pointer(
+                    painter,
+                    view,
+                    *at,
+                    crate::model::pin_tip(*at, ann.width),
+                    r * 1.5,
+                    color,
+                ),
+                (StepTail::Hidden, _) | (_, None) => {}
+                (StepTail::Pointer, Some(t)) => pointer(painter, view, *at, *t, r * 1.1, color),
+                (_, Some(t)) => {
+                    painter.line_segment(
+                        [view.to_screen(*at), view.to_screen(*t)],
+                        Stroke::new(((ann.width * 0.6).max(2.0) * s).max(1.0), color),
+                    );
+                }
             }
             let c = view.to_screen(*at);
             painter.circle_filled(c, r * s, color);
             painter.text(
                 c,
                 Align2::CENTER_CENTER,
-                number.to_string(),
+                crate::model::step_label(*number, ann.step_format),
                 theme::strong(r * s * 1.15),
-                color32(ann.color.contrast()),
+                color32(ann.text_color.unwrap_or_else(|| ann.color.contrast())),
             );
         }
         Shape::Magnifier {
@@ -195,6 +213,50 @@ pub fn paint(painter: &Painter, view: View, ann: &Annotation) {
                 Align2::CENTER_CENTER,
                 icon,
                 egui::FontId::new(size * s, egui::FontFamily::Name(theme::ICONS.into())),
+                color,
+            );
+        }
+        // --- Lot « Éditeur : annotations »
+        Shape::Polygon { points, closed, .. } => {
+            let mut pts: Vec<Pos2> = points.iter().map(|p| view.to_screen(*p)).collect();
+            if ann.fill && pts.len() >= 3 {
+                painter.add(EShape::convex_polygon(
+                    pts.clone(),
+                    color.gamma_multiply(0.5),
+                    Stroke::NONE,
+                ));
+            }
+            if *closed && let Some(first) = pts.first().copied() {
+                pts.push(first);
+            }
+            painter.add(EShape::line(pts, stroke));
+        }
+        Shape::Bracket { a, b, .. } => {
+            painter.rect_stroke(rect(*a, *b), 4.0, stroke, StrokeKind::Middle);
+        }
+        Shape::Image { a, b, .. } => {
+            let r = rect(*a, *b);
+            painter.rect_filled(r, 0.0, Color32::from_gray(128).gamma_multiply(0.5));
+            painter.rect_stroke(
+                r,
+                0.0,
+                Stroke::new(1.0, theme::TEXT_DIM),
+                StrokeKind::Inside,
+            );
+        }
+        Shape::Label { at, text, size } => {
+            let b = crate::model::label_box(*at, text, *size, &render::text_size);
+            painter.rect_stroke(
+                view.rect(b),
+                CornerRadius::same((size * 0.3 * s).min(255.0) as u8),
+                Stroke::new((size * 0.12 * s).max(1.0), color),
+                StrokeKind::Middle,
+            );
+            painter.text(
+                view.to_screen(*at),
+                Align2::CENTER_CENTER,
+                text,
+                theme::strong(size * s),
                 color,
             );
         }
@@ -301,4 +363,12 @@ pub fn handles(painter: &Painter, points: &[Pos2]) {
         painter.circle_filled(*p, HANDLE_RADIUS, theme::ACCENT_2);
         painter.circle_stroke(*p, HANDLE_RADIUS, Stroke::new(1.5, Color32::BLACK));
     }
+}
+
+// --- Lot « Éditeur : annotations » -----------------------------------------------------
+
+/// Rectangle de sélection tiré à la souris (outil Sélection, dans le vide).
+pub fn marquee(painter: &Painter, rect: Rect) {
+    painter.rect_filled(rect, 0.0, theme::ACCENT_2.gamma_multiply(0.08));
+    selection(painter, rect.shrink(4.0));
 }

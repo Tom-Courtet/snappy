@@ -13,13 +13,21 @@
 //! coins, pointes), ⌘D ou Alt+glisser pour la dupliquer, ⌘[ / ⌘] pour l'ordre, clic
 //! droit pour le menu, ⌫ pour la supprimer. Alt+clic : pipette. ⌘Z / ⌘⇧Z ;
 //! ⌘C copier ; ⌘S enregistrer ; ⌘0 ajuster ; ⌘1 taille réelle.
+//!
+//! Ajouts du lot « annotations » (voir `extras.rs`) : G polygone, J accolade ;
+//! Maj+clic et rectangle de sélection pour plusieurs annotations (aligner,
+//! répartir) ; ⌘X / ⌘V couper / coller des annotations ou une image ; image glissée
+//! sur le canevas ; PgPréc / PgSuiv image précédente / suivante ; ⌘O ouvrir ; F11
+//! plein écran.
 
 mod bars;
+mod extras;
 mod image_tab;
 mod prefs;
 mod preview;
 mod tools;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -57,6 +65,7 @@ pub fn run(store: Store, path: PathBuf) -> Result<()> {
         .with_title(format!("Snappy · {name}"))
         .with_inner_size([w, h])
         .with_min_inner_size([760.0, 460.0])
+        .with_drag_and_drop(true)
         .with_icon(window_icon());
     let options = eframe::NativeOptions {
         viewport,
@@ -100,6 +109,11 @@ enum Drag {
         handle: usize,
         moved: bool,
     },
+    // --- Lot « Éditeur : annotations »
+    /// Rectangle de sélection (outil Sélection, glissé dans le vide).
+    Marquee { from: Pt, to: Pt },
+    /// Zone à copier (« Copier une partie de l'image »).
+    Grab { from: Pt, to: Pt },
 }
 
 /// Texte en cours de saisie : texte simple (sur fond ou non) ou bulle.
@@ -120,6 +134,8 @@ struct TextEditing {
     shadow: bool,
     kind: TextKind,
     focus: bool,
+    /// Options de l'annotation (gras, lueur, type de bulle…), gardées à la validation.
+    template: Annotation,
 }
 
 pub(crate) struct Editor {
@@ -139,8 +155,8 @@ pub(crate) struct Editor {
     texture: Option<TextureHandle>,
     /// Rendu affiché (pour la pipette).
     composite: Option<RgbaImage>,
-    /// Annotation absente du rendu affiché (`Some(None)` : aucune), `None` : à refaire.
-    rendered: Option<Option<usize>>,
+    /// Annotations absentes du rendu affiché, `None` : à refaire.
+    rendered: Option<Vec<usize>>,
     /// `None` : image ajustée à la fenêtre.
     zoom: Option<f32>,
     status: Option<(String, Instant)>,
@@ -153,6 +169,33 @@ pub(crate) struct Editor {
     hex_input: String,
     /// Lot « Éditeur : image et effets » : fenêtre « Image » et modes.
     image: image_tab::ImageTab,
+    // --- Lot « Éditeur : annotations »
+    /// Autres annotations sélectionnées, en plus de `selected` (valables tant que
+    /// `selected` vaut `multi_for`).
+    multi: Vec<usize>,
+    multi_for: Option<usize>,
+    /// Polygone en cours de tracé : son dernier sommet suit la souris.
+    poly: Option<usize>,
+    /// Annotations copiées (menu Couper / Copier, ⌘X), le dossier de leurs images,
+    /// et l'empreinte de l'image du presse-papiers système à ce moment-là.
+    clip: Vec<Annotation>,
+    clip_assets: Option<PathBuf>,
+    clip_mark: Option<u64>,
+    pastes: u32,
+    tool_presets: BTreeMap<Tool, Vec<tools::Style>>,
+    validate_with_path: bool,
+    /// « Continuer la numérotation depuis cette valeur » : prochaine pastille imposée.
+    step_from: Option<u32>,
+    /// « Copier une partie de l'image » : le prochain glisser choisit la zone.
+    grab_part: bool,
+    /// Demande de confirmation avant de mettre l'image à la corbeille.
+    confirm_delete: bool,
+    /// Marqueur posé dans le presse-papiers interne d'egui, pour recevoir ⌘V.
+    paste_marker: bool,
+    /// Hauteur du bandeau des propriétés au-dessus de l'image (pixels).
+    banner: f32,
+    /// Échelle d'affichage du dernier rendu (curseur de zoom).
+    shown_scale: f32,
 }
 
 /// Historique d'annulation maximal.
@@ -189,6 +232,21 @@ impl Editor {
             density: 2.0,
             picking: false,
             image: Default::default(),
+            multi: Vec::new(),
+            multi_for: None,
+            poly: None,
+            clip: Vec::new(),
+            clip_assets: None,
+            clip_mark: None,
+            pastes: 0,
+            tool_presets: prefs.tool_presets,
+            validate_with_path: prefs.validate_with_path,
+            step_from: None,
+            grab_part: false,
+            confirm_delete: false,
+            paste_marker: false,
+            banner: 0.0,
+            shown_scale: 1.0,
         }
     }
 
@@ -205,6 +263,8 @@ impl Editor {
             tool: self.tool,
             style: self.style.clone(),
             presets: self.presets.clone(),
+            tool_presets: self.tool_presets.clone(),
+            validate_with_path: self.validate_with_path,
         }
         .save(&self.prefs_path);
     }
@@ -247,6 +307,7 @@ impl Editor {
     }
 
     fn select(&mut self, index: Option<usize>) {
+        self.multi.clear();
         self.selected = index.filter(|&i| i < self.doc.annotations.len());
         if let Some(i) = self.selected {
             let ann = self.doc.annotations[i].clone();
@@ -256,6 +317,10 @@ impl Editor {
     }
 
     fn delete_selected(&mut self) {
+        if self.selection().len() > 1 {
+            self.delete_many();
+            return;
+        }
         if let Some(i) = self.selected.take()
             && i < self.doc.annotations.len()
         {
@@ -267,6 +332,10 @@ impl Editor {
 
     /// Copie décalée de l'annotation sélectionnée, sélectionnée à son tour.
     fn duplicate_selected(&mut self) {
+        if self.selection().len() > 1 {
+            self.duplicate_many();
+            return;
+        }
         let Some(i) = self.selected else { return };
         let Some(mut copy) = self.doc.annotations.get(i).cloned() else {
             return;
@@ -307,6 +376,13 @@ impl Editor {
                 *boxed = self.style.boxed;
             }
         }
+        if let Some(edit) = &mut self.text {
+            self.style.apply_options(&mut edit.template);
+        }
+        if self.selection().len() > 1 {
+            self.restyle_many();
+            return;
+        }
         let Some(i) = self.selected else { return };
         let Some(ann) = self.doc.annotations.get(i) else {
             return;
@@ -322,9 +398,11 @@ impl Editor {
 
     /// Couleur sous le point `p` de l'image affichée (pipette).
     fn pick_color(&mut self, p: Pt) {
+        // Le rendu affiché commence par le bandeau des propriétés, s'il y en a un.
+        let y = p.y + self.banner;
         let px = self.composite.as_ref().and_then(|img| {
-            (p.x >= 0.0 && p.y >= 0.0)
-                .then(|| img.get_pixel_checked(p.x as u32, p.y as u32))
+            (p.x >= 0.0 && y >= 0.0)
+                .then(|| img.get_pixel_checked(p.x as u32, y as u32))
                 .flatten()
         });
         if let Some(px) = px {
@@ -343,7 +421,12 @@ impl Editor {
 
     fn flattened(&mut self) -> RgbaImage {
         self.commit_text();
-        crate::effects::apply_export(&self.base, &self.doc)
+        self.finish_polygon();
+        crate::effects::apply_export_with(
+            &self.base,
+            &self.doc,
+            Some(&render::assets_dir(&self.path)),
+        )
     }
 
     fn copy(&mut self) {
@@ -379,6 +462,7 @@ impl Editor {
         self.commit_text();
         let m = self.metrics();
         let existing = index.and_then(|i| self.doc.annotations.get(i)).cloned();
+        let template = existing.clone();
         let edit = match existing {
             Some(Annotation {
                 shape:
@@ -400,6 +484,9 @@ impl Editor {
                 shadow,
                 kind: TextKind::Plain { boxed },
                 focus: true,
+                template: template
+                    .clone()
+                    .unwrap_or_else(|| self.style.annotate(Shape::Pen { points: Vec::new() }, m)),
             },
             Some(Annotation {
                 shape:
@@ -421,6 +508,9 @@ impl Editor {
                 shadow,
                 kind: TextKind::Bubble { tail },
                 focus: true,
+                template: template
+                    .clone()
+                    .unwrap_or_else(|| self.style.annotate(Shape::Pen { points: Vec::new() }, m)),
             },
             _ => TextEditing {
                 index: None,
@@ -431,6 +521,23 @@ impl Editor {
                 shadow: self.style.shadow,
                 kind,
                 focus: true,
+                template: self.style.annotate(
+                    match kind {
+                        TextKind::Plain { .. } => Shape::Text {
+                            at,
+                            text: String::new(),
+                            size: m.text,
+                            boxed: false,
+                        },
+                        TextKind::Bubble { tail } => Shape::Bubble {
+                            at,
+                            text: String::new(),
+                            size: m.text,
+                            tail,
+                        },
+                    },
+                    m,
+                ),
             },
         };
         self.text = Some(edit);
@@ -459,6 +566,12 @@ impl Editor {
         };
         let mut ann = Annotation::new(shape, edit.color, self.metrics().stroke);
         ann.shadow = edit.shadow;
+        // Options du lot « annotations » : celles du texte modifié (ou du style).
+        ann.opacity = edit.template.opacity;
+        ann.text_style = edit.template.text_style;
+        if matches!(ann.shape, Shape::Bubble { .. }) {
+            ann.bubble = edit.template.bubble;
+        }
         match edit.index {
             Some(i) if i < self.doc.annotations.len() => {
                 if self.doc.annotations[i] != ann {
@@ -524,8 +637,8 @@ impl Editor {
     }
 
     fn refresh_texture(&mut self, ctx: &egui::Context) {
-        let hidden = self.hidden();
-        if self.rendered == Some(hidden) && self.texture.is_some() {
+        let hidden = self.hidden_all();
+        if self.rendered.as_ref() == Some(&hidden) && self.texture.is_some() {
             return;
         }
         let shown: Vec<Annotation> = self
@@ -533,10 +646,14 @@ impl Editor {
             .annotations
             .iter()
             .enumerate()
-            .filter(|(i, _)| Some(*i) != hidden)
+            .filter(|(i, _)| !hidden.contains(i))
             .map(|(_, a)| a.clone())
             .collect();
-        let img = render::render(&self.base, &shown);
+        // Le document tel qu'enregistré (bandeau compris), moins ce qui est masqué.
+        let mut doc = self.doc.clone();
+        doc.annotations = shown;
+        self.banner = render::banner_height(&doc, self.base.width()) as f32;
+        let img = render::render_doc(&self.base, &doc, Some(&render::assets_dir(&self.path)));
         let color = egui::ColorImage::from_rgba_unmultiplied(
             [img.width() as usize, img.height() as usize],
             img.as_raw(),
@@ -572,11 +689,43 @@ impl Editor {
             Duplicate,
             Front,
             Back,
+            // Lot « Éditeur : annotations » (raccourcis jusque-là libres).
+            Cut,
+            Paste,
+            Previous,
+            Next,
+            Open,
+            Fullscreen,
+            FinishPolygon,
         }
         let mut acts = Vec::new();
+        let drawing_polygon = self.poly.is_some();
         ctx.input_mut(|i| {
             if i.events.iter().any(|e| matches!(e, egui::Event::Copy)) {
                 acts.push(Act::Copy);
+            }
+            // ⌘X et ⌘V n'arrivent que sous forme d'évènements (voir `extras.rs`).
+            if i.events.iter().any(|e| matches!(e, egui::Event::Cut)) {
+                acts.push(Act::Cut);
+            }
+            if i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Paste(_) | egui::Event::PasteImage(_)))
+            {
+                acts.push(Act::Paste);
+            }
+            for (mods, key, act) in [
+                (Modifiers::NONE, Key::PageUp, Act::Previous),
+                (Modifiers::NONE, Key::PageDown, Act::Next),
+                (Modifiers::COMMAND, Key::O, Act::Open),
+                (Modifiers::NONE, Key::F11, Act::Fullscreen),
+            ] {
+                if i.consume_key(mods, key) {
+                    acts.push(act);
+                }
+            }
+            if drawing_polygon && i.consume_key(Modifiers::NONE, Key::Enter) {
+                acts.push(Act::FinishPolygon);
             }
             let cmd = Modifiers::COMMAND;
             for (mods, key, act) in [
@@ -621,6 +770,11 @@ impl Editor {
                 Act::Undo => self.undo(),
                 Act::Redo => self.redo(),
                 Act::Delete => self.delete_selected(),
+                Act::Escape if self.poly.is_some() => self.finish_polygon(),
+                Act::Escape if self.grab_part => {
+                    self.grab_part = false;
+                    self.drag = None;
+                }
                 Act::Escape => {
                     if self.picking {
                         self.picking = false;
@@ -635,12 +789,20 @@ impl Editor {
                 Act::Duplicate => self.duplicate_selected(),
                 Act::Front => self.reorder_selected(true),
                 Act::Back => self.reorder_selected(false),
+                Act::Cut => self.cut_annotations(),
+                Act::Paste => self.paste(None),
+                Act::Previous => self.open_sibling(ctx, -1),
+                Act::Next => self.open_sibling(ctx, 1),
+                Act::Open => self.open_dialog(ctx),
+                Act::Fullscreen => extras::toggle_fullscreen(ctx),
+                Act::FinishPolygon => self.finish_polygon(),
             }
         }
     }
 
     fn set_tool(&mut self, tool: Tool) {
         self.commit_text();
+        self.finish_polygon();
         self.tool = tool;
         self.picking = false;
     }
@@ -651,11 +813,16 @@ impl Editor {
         let ctx = ui.ctx().clone();
         self.refresh_texture(&ctx);
         let avail = ui.available_rect_before_wrap();
-        let (iw, ih) = (self.base.width() as f32, self.base.height() as f32);
+        // Hauteur affichée : l'image et le bandeau des propriétés au-dessus.
+        let (iw, ih) = (
+            self.base.width() as f32,
+            self.base.height() as f32 + self.banner,
+        );
         let fit = (avail.width() / iw)
             .min(avail.height() / ih)
             .min(1.0 / self.density);
         let scale = self.zoom.unwrap_or(fit);
+        self.shown_scale = scale;
         let size = vec2(iw, ih) * scale;
 
         egui::ScrollArea::both()
@@ -666,7 +833,7 @@ impl Editor {
                 let (outer, _) = ui.allocate_exact_size(area, Sense::hover());
                 let image_rect = Rect::from_center_size(outer.center(), size);
                 let view = View {
-                    origin: image_rect.min,
+                    origin: image_rect.min + vec2(0.0, self.banner * scale),
                     scale,
                 };
                 let painter = ui.painter_at(outer);
@@ -677,8 +844,11 @@ impl Editor {
                 }
                 let response =
                     ui.interact(outer, ui.scope_id().with("canvas"), Sense::click_and_drag());
+                self.dropped_files(&ctx, &response, view);
                 if !self.image_canvas(&ctx, &response, &painter, view) {
-                    self.pointer(&ctx, &response, view);
+                    if !self.extra_pointer(&ctx, &response, view) {
+                        self.pointer(&ctx, &response, view);
+                    }
                     self.context_menu(&response, view);
                 }
 
@@ -688,6 +858,7 @@ impl Editor {
                 {
                     preview::paint(&painter, view, ann);
                 }
+                self.extra_paint(&painter, view);
                 if let Some(i) = self.selected
                     && let Some(ann) = self.doc.annotations.get(i)
                 {
@@ -789,7 +960,7 @@ impl Editor {
                     let shape = if self.tool == Tool::Step {
                         Shape::Step {
                             at: pt,
-                            number: self.doc.next_step(),
+                            number: self.take_step(),
                             tail: None,
                         }
                     } else {
@@ -848,8 +1019,11 @@ impl Editor {
                     None => self.selected = None,
                 }
             } else if let Some(shape) =
-                new_shape(self.tool, start, &self.style, m, self.doc.next_step())
+                new_shape(self.tool, start, &self.style, m, self.peek_step())
             {
+                if self.tool == Tool::Step {
+                    self.take_step();
+                }
                 self.checkpoint();
                 self.doc.annotations.push(self.style.annotate(shape, m));
                 self.selected = None;
@@ -887,6 +1061,8 @@ impl Editor {
                         moved: true,
                     });
                 }
+                // Gérés par `extra_pointer`.
+                Drag::Marquee { .. } | Drag::Grab { .. } => {}
             }
         }
 
@@ -912,7 +1088,7 @@ impl Editor {
                     self.undo.pop();
                 }
                 Some(Drag::Move { .. } | Drag::Handle { .. }) => self.changed(),
-                None => {}
+                Some(Drag::Marquee { .. } | Drag::Grab { .. }) | None => {}
             }
             self.rendered = None;
         }
@@ -924,6 +1100,7 @@ impl Editor {
             self.image_menu(ui);
             if self.selected.is_none() {
                 ui.label(egui::RichText::new("Rien de sélectionné").color(theme::TEXT_DIM));
+                self.extra_menu(ui, false);
                 return;
             }
             let cmd = |key: &str| crate::ui::keys::cmd(false, key);
@@ -964,6 +1141,7 @@ impl Editor {
                 self.delete_selected();
                 ui.close();
             }
+            self.extra_menu(ui, true);
         });
     }
 
@@ -971,6 +1149,8 @@ impl Editor {
     /// fond pour un texte encadré ou une bulle).
     fn text_box(&mut self, ui: &mut Ui, painter: &egui::Painter, view: View) {
         let Some(edit) = &mut self.text else { return };
+        // Le marqueur de ⌘V (voir `extras.rs`) ne doit pas finir dans le texte.
+        edit.text.retain(|c| c != extras::PASTE_MARKER);
         // Entrée valide, ⇧Entrée va à la ligne, Échap annule.
         let (enter, escape) = ui.input_mut(|i| {
             (
@@ -1001,6 +1181,9 @@ impl Editor {
                     max: edit.at.offset(w + px, h + py),
                 }
             }),
+            TextKind::Bubble { .. } if edit.template.bubble != crate::model::BubbleKind::Tail => {
+                Some(bubble_box(edit.at, shown, edit.size, &render::text_size))
+            }
             TextKind::Bubble { tail } => {
                 let b = bubble_box(edit.at, shown, edit.size, &render::text_size);
                 let tip = view.to_screen(tail);
@@ -1062,7 +1245,16 @@ impl eframe::App for Editor {
         let ctx = ui.ctx().clone();
         self.density = ctx.pixels_per_point().max(1.0);
         self.image_ui(&ctx);
+        self.frame_extras(&ctx);
         self.shortcuts(&ctx);
+        egui::Panel::top("title")
+            .frame(
+                Frame::new()
+                    .fill(theme::BG)
+                    .inner_margin(Margin::symmetric(12, 4)),
+            )
+            .show_separator_line(false)
+            .show(ui, |ui| self.title_bar(ui));
         egui::Panel::top("tools")
             .frame(
                 Frame::new()
@@ -1093,6 +1285,7 @@ impl eframe::App for Editor {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.commit_text();
+        self.finish_polygon();
         self.save_prefs();
     }
 }

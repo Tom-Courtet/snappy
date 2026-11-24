@@ -210,6 +210,42 @@ pub enum Shape {
         icon: String,
         size: f32,
     },
+    // --- Lot « Éditeur : annotations » ---------------------------------------
+    /// Polygone ou ligne brisée : sommets posés clic après clic. `closed` : le dernier
+    /// sommet rejoint le premier. `start` / `end` : forme des bouts d'une ligne ouverte.
+    Polygon {
+        points: Vec<Pt>,
+        #[serde(default)]
+        closed: bool,
+        #[serde(default)]
+        start: EndShape,
+        #[serde(default)]
+        end: EndShape,
+    },
+    /// Accolade dans le rectangle (`a`, `b`), pointe du côté `side`.
+    Bracket {
+        a: Pt,
+        b: Pt,
+        #[serde(default)]
+        side: BracketSide,
+    },
+    /// Image insérée (tampon personnel, glisser-déposer, collage) étirée dans le
+    /// rectangle (`a`, `b`). `file` : nom du fichier dans le dossier `<capture>.assets/`,
+    /// jamais l'image elle-même. `ratio` : largeur / hauteur d'origine, gardé au
+    /// redimensionnement.
+    Image {
+        a: Pt,
+        b: Pt,
+        file: String,
+        ratio: f32,
+    },
+    /// Tampon texte (« APPROUVÉ », « BROUILLON »…) : texte en capitales dans un cadre
+    /// arrondi, centré sur `at`.
+    Label {
+        at: Pt,
+        text: String,
+        size: f32,
+    },
 }
 
 /// Une annotation : forme, couleur et épaisseur du trait (pixels de l'image).
@@ -224,6 +260,36 @@ pub struct Annotation {
     /// Ombre portée douce.
     #[serde(default)]
     pub shadow: bool,
+    // --- Lot « Éditeur : annotations » : options de style, toutes facultatives (un
+    // fichier qui ne les a pas se relit tel quel, et elles ne sont écrites que si
+    // elles diffèrent du rendu d'origine).
+    /// Opacité de toute l'annotation, de 0 à 1.
+    #[serde(default = "opaque", skip_serializing_if = "is_opaque")]
+    pub opacity: f32,
+    /// Type de trait (traits, contours, polygones, accolades).
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub dash: LineStyle,
+    /// Rectangle et ellipse : assombrir tout l'extérieur (effet projecteur).
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub dim_outside: bool,
+    /// Rectangle et ellipse : flouter tout l'extérieur.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub blur_outside: bool,
+    /// Textes et bulles : gras, italique, souligné, alignement, lueur.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub text_style: TextStyle,
+    /// Bulles : avec pointe (défaut), sans pointe, ou cadre simple.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub bubble: BubbleKind,
+    /// Pastilles : 1, 2, 3 / A, B, C / i, ii, iii.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub step_format: StepFormat,
+    /// Pastilles : forme du lien vers l'élément désigné.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub step_tail: StepTail,
+    /// Pastilles : couleur du numéro (`None` : noir ou blanc selon le fond).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_color: Option<Rgba>,
 }
 
 impl Annotation {
@@ -234,8 +300,285 @@ impl Annotation {
             width,
             fill: false,
             shadow: false,
+            opacity: 1.0,
+            dash: LineStyle::Solid,
+            dim_outside: false,
+            blur_outside: false,
+            text_style: TextStyle::default(),
+            bubble: BubbleKind::Tail,
+            step_format: StepFormat::Number,
+            step_tail: StepTail::Pointer,
+            text_color: None,
         }
     }
+}
+
+// --- Lot « Éditeur : annotations » : types des nouvelles options ---------------------
+
+fn opaque() -> f32 {
+    1.0
+}
+
+fn is_opaque(v: &f32) -> bool {
+    *v >= 1.0
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+/// Type de trait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineStyle {
+    #[default]
+    Solid,
+    /// Pointillé.
+    Dotted,
+    /// Tiret-point.
+    DashDot,
+}
+
+/// Alignement des lignes d'un texte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+/// Lueur autour d'un texte, pour le lire sur n'importe quel fond. Remplace le liseré
+/// contrasté du texte simple.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Glow {
+    pub color: Rgba,
+    /// Épaisseur, en pixels de l'image.
+    pub size: f32,
+    /// Flou, en pixels de l'image.
+    pub blur: f32,
+}
+
+/// Options du texte (textes et bulles).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextStyle {
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub align: TextAlign,
+    pub glow: Option<Glow>,
+}
+
+/// Type de bulle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BubbleKind {
+    /// Bulle de dialogue avec sa pointe.
+    #[default]
+    Tail,
+    /// Bulle arrondie sans pointe.
+    NoTail,
+    /// Cadre simple, coins à peine arrondis, sans pointe.
+    Simple,
+}
+
+/// Format du numéro d'une pastille.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepFormat {
+    /// 1, 2, 3…
+    #[default]
+    Number,
+    /// A, B, C… (puis AA, AB…)
+    Letter,
+    /// i, ii, iii…
+    Roman,
+}
+
+/// Lien d'une pastille vers l'élément désigné.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepTail {
+    /// Pointe pleine (rendu d'origine).
+    #[default]
+    Pointer,
+    /// Trait terminé par un point.
+    Line,
+    /// Trait terminé par une pointe de flèche.
+    Arrow,
+    /// Épingle : la pastille devient une punaise pointée vers le bas.
+    Pin,
+    /// Aucun lien, même si une pointe a été tirée.
+    Hidden,
+}
+
+/// Bout d'une ligne brisée.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndShape {
+    #[default]
+    Plain,
+    Arrow,
+    Round,
+}
+
+/// Côté de la pointe d'une accolade : { } ︵ ︶.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BracketSide {
+    #[default]
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// Texte du numéro `n` d'une pastille dans ce format.
+pub fn step_label(n: u32, format: StepFormat) -> String {
+    match format {
+        StepFormat::Number => n.to_string(),
+        StepFormat::Letter => {
+            // 1 → A, 26 → Z, 27 → AA (comme les colonnes d'un tableur).
+            let mut n = n.max(1);
+            let mut out = Vec::new();
+            while n > 0 {
+                n -= 1;
+                out.push(char::from(b'A' + (n % 26) as u8));
+                n /= 26;
+            }
+            out.iter().rev().collect()
+        }
+        StepFormat::Roman => {
+            const TABLE: [(u32, &str); 13] = [
+                (1000, "m"),
+                (900, "cm"),
+                (500, "d"),
+                (400, "cd"),
+                (100, "c"),
+                (90, "xc"),
+                (50, "l"),
+                (40, "xl"),
+                (10, "x"),
+                (9, "ix"),
+                (5, "v"),
+                (4, "iv"),
+                (1, "i"),
+            ];
+            let mut n = n.clamp(1, 3999);
+            let mut out = String::new();
+            for (value, digits) in TABLE {
+                while n >= value {
+                    out.push_str(digits);
+                    n -= value;
+                }
+            }
+            out
+        }
+    }
+}
+
+/// Pointe d'une pastille en épingle.
+pub fn pin_tip(at: Pt, width: f32) -> Pt {
+    at.offset(0.0, step_radius(width) * 1.9)
+}
+
+/// Cadre d'un tampon texte centré sur `at`.
+pub fn label_box(at: Pt, text: &str, size: f32, text_size: &impl TextSize) -> Bounds {
+    let (w, h) = text_size(text, size);
+    let (px, py) = (size * 0.6, size * 0.3);
+    Bounds {
+        min: at.offset(-w / 2.0 - px, -h / 2.0 - py),
+        max: at.offset(w / 2.0 + px, h / 2.0 + py),
+    }
+}
+
+/// Le point est-il dans le polygone (règle pair-impair) ?
+fn inside_polygon(p: Pt, points: &[Pt]) -> bool {
+    let mut inside = false;
+    let n = points.len();
+    for i in 0..n {
+        let (a, b) = (points[i], points[(i + 1) % n]);
+        if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+/// Coin opposé à `fixed` d'un rectangle tiré vers `p` qui garde le rapport largeur /
+/// hauteur `ratio`.
+pub fn keep_ratio(fixed: Pt, p: Pt, ratio: f32) -> Pt {
+    if ratio <= 0.0 || !ratio.is_finite() {
+        return p;
+    }
+    let (dx, dy) = (p.x - fixed.x, p.y - fixed.y);
+    let (w, h) = if dx.abs() / ratio > dy.abs() {
+        (dx.abs(), dx.abs() / ratio)
+    } else {
+        (dy.abs() * ratio, dy.abs())
+    };
+    let sign = |v: f32| if v < 0.0 { -1.0 } else { 1.0 };
+    Pt::new(fixed.x + w * sign(dx), fixed.y + h * sign(dy))
+}
+
+/// Alignement d'une sélection de plusieurs annotations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Center,
+    Right,
+    Top,
+    Middle,
+    Bottom,
+}
+
+/// Décalages (dx, dy) qui alignent chaque boîte sur un bord ou le milieu de leur
+/// ensemble.
+pub fn align_offsets(boxes: &[Bounds], how: Align) -> Vec<(f32, f32)> {
+    let Some(all) = boxes.iter().copied().reduce(Bounds::union) else {
+        return Vec::new();
+    };
+    boxes
+        .iter()
+        .map(|b| match how {
+            Align::Left => (all.min.x - b.min.x, 0.0),
+            Align::Center => (all.center().x - b.center().x, 0.0),
+            Align::Right => (all.max.x - b.max.x, 0.0),
+            Align::Top => (0.0, all.min.y - b.min.y),
+            Align::Middle => (0.0, all.center().y - b.center().y),
+            Align::Bottom => (0.0, all.max.y - b.max.y),
+        })
+        .collect()
+}
+
+/// Décalages qui répartissent les boîtes avec des écarts égaux, les deux extrêmes
+/// restant en place (`horizontal` : de gauche à droite, sinon de haut en bas).
+pub fn distribute_offsets(boxes: &[Bounds], horizontal: bool) -> Vec<(f32, f32)> {
+    let n = boxes.len();
+    let mut out = vec![(0.0, 0.0); n];
+    if n < 3 {
+        return out;
+    }
+    let lo = |b: &Bounds| if horizontal { b.min.x } else { b.min.y };
+    let size = |b: &Bounds| if horizontal { b.width() } else { b.height() };
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| lo(&boxes[i]).total_cmp(&lo(&boxes[j])));
+    let first = lo(&boxes[order[0]]);
+    let end = boxes
+        .iter()
+        .map(|b| lo(b) + size(b))
+        .fold(f32::MIN, f32::max);
+    let total: f32 = boxes.iter().map(size).sum();
+    let gap = (end - first - total) / (n - 1) as f32;
+    let mut pos = first;
+    for &i in &order {
+        let d = pos - lo(&boxes[i]);
+        out[i] = if horizontal { (d, 0.0) } else { (0.0, d) };
+        pos += size(&boxes[i]) + gap;
+    }
+    out
 }
 
 /// Rectangle aligné, `min` en haut à gauche.
@@ -418,18 +761,37 @@ impl Annotation {
                 text,
                 size,
                 tail,
-            } => bubble_box(*at, text, *size, &text_size).union(r(*tail, *tail)),
+            } => {
+                let b = bubble_box(*at, text, *size, &text_size);
+                if self.bubble == BubbleKind::Tail {
+                    b.union(r(*tail, *tail))
+                } else {
+                    b
+                }
+            }
             Shape::Step { at, tail, .. } => {
                 let rad = step_radius(self.width);
                 let b = Bounds {
                     min: at.offset(-rad, -rad),
                     max: at.offset(rad, rad),
                 };
-                match tail {
-                    Some(t) => b.union(r(*t, *t)),
-                    None => b,
+                match (self.step_tail, tail) {
+                    (StepTail::Pin, _) => {
+                        let tip = pin_tip(*at, self.width);
+                        b.union(r(tip, tip))
+                    }
+                    (StepTail::Hidden, _) | (_, None) => b,
+                    (_, Some(t)) => b.union(r(*t, *t)),
                 }
             }
+            Shape::Polygon { points, .. } => {
+                Bounds::from_points(points.iter().copied()).unwrap_or(Bounds {
+                    min: Pt::default(),
+                    max: Pt::default(),
+                })
+            }
+            Shape::Bracket { a, b, .. } | Shape::Image { a, b, .. } => r(*a, *b),
+            Shape::Label { at, text, size } => label_box(*at, text, *size, &text_size),
             Shape::Magnifier {
                 source,
                 radius,
@@ -496,6 +858,11 @@ impl Annotation {
                 }
             }
             Shape::Step { at, tail, .. } => {
+                let tail = match self.step_tail {
+                    StepTail::Pin => Some(pin_tip(*at, self.width)),
+                    StepTail::Hidden => None,
+                    _ => *tail,
+                };
                 p.dist(*at) <= step_radius(self.width) + tolerance
                     || tail
                         .is_some_and(|t| dist_to_segment(p, *at, t) <= reach.max(tolerance * 2.0))
@@ -508,7 +875,19 @@ impl Annotation {
             } => {
                 let b = bubble_box(*at, text, *size, &text_size);
                 b.expand(tolerance).contains(p)
-                    || dist_to_segment(p, b.center(), *tail) <= tolerance * 2.0
+                    || (self.bubble == BubbleKind::Tail
+                        && dist_to_segment(p, b.center(), *tail) <= tolerance * 2.0)
+            }
+            Shape::Polygon { points, closed, .. } => {
+                let mut ring = points.clone();
+                if *closed && let Some(first) = points.first() {
+                    ring.push(*first);
+                }
+                dist_to_polyline(p, &ring) <= reach
+                    || (self.fill && points.len() >= 3 && inside_polygon(p, points))
+            }
+            Shape::Bracket { .. } | Shape::Image { .. } | Shape::Label { .. } => {
+                self.bounds(text_size).expand(tolerance).contains(p)
             }
             Shape::Magnifier {
                 source,
@@ -566,6 +945,12 @@ impl Annotation {
                 mv(source);
                 mv(at);
             }
+            Shape::Polygon { points, .. } => points.iter_mut().for_each(mv),
+            Shape::Bracket { a, b, .. } | Shape::Image { a, b, .. } => {
+                mv(a);
+                mv(b);
+            }
+            Shape::Label { at, .. } => mv(at),
         }
     }
 
@@ -582,10 +967,19 @@ impl Annotation {
             | Shape::Spotlight { a, b }
             | Shape::Pixelate { a, b }
             | Shape::Blur { a, b } => Bounds::from_corners(*a, *b).corners().to_vec(),
-            Shape::Bubble { tail, .. } => vec![*tail],
+            Shape::Bubble { tail, .. } if self.bubble == BubbleKind::Tail => vec![*tail],
+            Shape::Bubble { .. } => Vec::new(),
+            Shape::Step { .. } if matches!(self.step_tail, StepTail::Pin | StepTail::Hidden) => {
+                Vec::new()
+            }
             Shape::Step { at, tail, .. } => {
                 vec![tail.unwrap_or_else(|| step_tail_handle(*at, self.width))]
             }
+            Shape::Polygon { points, .. } => points.clone(),
+            Shape::Bracket { a, b, .. } | Shape::Image { a, b, .. } => {
+                Bounds::from_corners(*a, *b).corners().to_vec()
+            }
+            Shape::Label { .. } => Vec::new(),
             Shape::Magnifier {
                 source,
                 radius,
@@ -642,7 +1036,22 @@ impl Annotation {
                 1 => *at = p,
                 _ => *zoom = (p.dist(*at) / radius.max(1.0)).clamp(1.2, 8.0),
             },
-            Shape::Pen { .. } | Shape::Text { .. } | Shape::Stamp { .. } => {}
+            Shape::Polygon { points, .. } => {
+                if let Some(v) = points.get_mut(index) {
+                    *v = p;
+                }
+            }
+            Shape::Bracket { a, b, .. } => {
+                let corners = Bounds::from_corners(*a, *b).corners();
+                *a = corners[(index + 2) % 4];
+                *b = p;
+            }
+            Shape::Image { a, b, ratio, .. } => {
+                let corners = Bounds::from_corners(*a, *b).corners();
+                *a = corners[(index + 2) % 4];
+                *b = keep_ratio(*a, p, *ratio);
+            }
+            Shape::Pen { .. } | Shape::Text { .. } | Shape::Stamp { .. } | Shape::Label { .. } => {}
         }
     }
 
@@ -664,7 +1073,23 @@ impl Annotation {
             Shape::Text { text, .. } | Shape::Bubble { text, .. } => text.trim().is_empty(),
             Shape::Magnifier { radius, .. } => *radius < MIN,
             Shape::Step { .. } | Shape::Stamp { .. } => false,
+            Shape::Polygon { points, .. } => {
+                points.len() < 2
+                    || Bounds::from_points(points.iter().copied())
+                        .is_none_or(|b| b.width().max(b.height()) < MIN)
+            }
+            Shape::Bracket { a, b, .. } | Shape::Image { a, b, .. } => {
+                let r = Bounds::from_corners(*a, *b);
+                r.width() < MIN || r.height() < MIN
+            }
+            Shape::Label { text, .. } => text.trim().is_empty(),
         }
+    }
+
+    /// Le rectangle ou l'ellipse a-t-il un effet sur tout l'extérieur ?
+    pub fn affects_outside(&self) -> bool {
+        (self.dim_outside || self.blur_outside)
+            && matches!(self.shape, Shape::Rect { .. } | Shape::Ellipse { .. })
     }
 
     /// L'ombre portée a-t-elle un sens pour cette forme ? (Pas pour les effets qui
@@ -715,6 +1140,14 @@ pub struct Doc {
     /// Résolution écrite dans le PNG exporté (métadonnée seule).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dpi: Option<f32>,
+    // --- Lot « Éditeur : annotations » : propriétés de l'image (bandeau titre et
+    // description au-dessus de l'image, seulement si `show_properties`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub show_properties: bool,
 }
 
 // --- Lot « Capture » ---
@@ -743,6 +1176,37 @@ impl CaptureContext {
 }
 
 impl Doc {
+    /// Le bandeau des propriétés est-il à dessiner ?
+    pub fn has_banner(&self) -> bool {
+        self.show_properties
+            && !(self.title.trim().is_empty() && self.description.trim().is_empty())
+    }
+
+    /// Renumérote les pastilles dans l'ordre des annotations (de la plus ancienne à la
+    /// plus récente), à partir du plus petit numéro présent. `true` si quelque chose a
+    /// changé.
+    pub fn renumber_steps(&mut self) -> bool {
+        let start = self
+            .annotations
+            .iter()
+            .filter_map(|a| match a.shape {
+                Shape::Step { number, .. } => Some(number),
+                _ => None,
+            })
+            .min()
+            .unwrap_or(1);
+        let mut next = start;
+        let mut changed = false;
+        for ann in &mut self.annotations {
+            if let Shape::Step { number, .. } = &mut ann.shape {
+                changed |= *number != next;
+                *number = next;
+                next += 1;
+            }
+        }
+        changed
+    }
+
     /// Numéro de la prochaine pastille : un de plus que la plus grande.
     pub fn next_step(&self) -> u32 {
         self.annotations
@@ -958,6 +1422,209 @@ mod tests {
             }
         ));
         assert!(!doc.annotations[1].fill && !doc.annotations[1].shadow);
+    }
+
+    // --- Lot « Éditeur : annotations » -----------------------------------------------
+
+    /// Fichier écrit par la version actuelle (avant ce lot), toutes formes et options
+    /// confondues : il se relit, et se réécrit à l'identique (aucun champ nouveau
+    /// n'apparaît tant qu'on ne s'en sert pas).
+    #[test]
+    fn current_version_files_still_load_and_rewrite_identically() {
+        let json = r#"{"annotations":[{"shape":{"kind":"arrow","from":{"x":0.0,"y":0.0},"to":{"x":9.0,"y":9.0},"style":"big","bend":{"x":4.0,"y":1.0}},"color":[255,0,0,255],"width":4.0,"fill":false,"shadow":true},{"shape":{"kind":"line","from":{"x":0.0,"y":0.0},"to":{"x":9.0,"y":9.0}},"color":[0,0,0,255],"width":2.0,"fill":false,"shadow":false},{"shape":{"kind":"rect","a":{"x":0.0,"y":0.0},"b":{"x":9.0,"y":9.0},"radius":12.0},"color":[255,0,0,255],"width":4.0,"fill":true,"shadow":false},{"shape":{"kind":"ellipse","a":{"x":0.0,"y":0.0},"b":{"x":9.0,"y":9.0}},"color":[255,0,0,255],"width":4.0,"fill":false,"shadow":false},{"shape":{"kind":"highlight","a":{"x":0.0,"y":0.0},"b":{"x":9.0,"y":9.0}},"color":[255,214,10,255],"width":4.0,"fill":false,"shadow":false},{"shape":{"kind":"spotlight","a":{"x":0.0,"y":0.0},"b":{"x":9.0,"y":9.0}},"color":[255,0,0,255],"width":4.0,"fill":false,"shadow":false},{"shape":{"kind":"pixelate","a":{"x":0.0,"y":0.0},"b":{"x":9.0,"y":9.0}},"color":[255,0,0,255],"width":4.0,"fill":false,"shadow":false},{"shape":{"kind":"blur","a":{"x":0.0,"y":0.0},"b":{"x":9.0,"y":9.0}},"color":[255,0,0,255],"width":4.0,"fill":false,"shadow":false},{"shape":{"kind":"pen","points":[{"x":0.0,"y":0.0},{"x":3.0,"y":4.0}]},"color":[255,0,0,255],"width":4.0,"fill":false,"shadow":false},{"shape":{"kind":"text","at":{"x":0.0,"y":0.0},"text":"a\nb","size":40.0,"boxed":true},"color":[255,0,0,255],"width":4.0,"fill":false,"shadow":false},{"shape":{"kind":"bubble","at":{"x":1.0,"y":2.0},"text":"Clique","size":24.0,"tail":{"x":0.0,"y":80.0}},"color":[255,0,0,255],"width":4.0,"fill":false,"shadow":false},{"shape":{"kind":"step","at":{"x":0.0,"y":0.0},"number":3,"tail":{"x":40.0,"y":40.0}},"color":[255,0,0,255],"width":4.0,"fill":false,"shadow":false},{"shape":{"kind":"magnifier","source":{"x":10.0,"y":10.0},"radius":20.0,"at":{"x":90.0,"y":10.0},"zoom":2.0},"color":[255,0,0,255],"width":4.0,"fill":false,"shadow":false},{"shape":{"kind":"stamp","at":{"x":10.0,"y":10.0},"icon":"\u{e1c3}","size":80.0},"color":[255,0,0,255],"width":4.0,"fill":false,"shadow":false}]}"#;
+        let json = json.replace("\\u{e1c3}", "\u{e1c3}");
+        let doc: Doc = serde_json::from_str(&json).unwrap();
+        assert_eq!(doc.annotations.len(), 14);
+        for a in &doc.annotations {
+            assert_eq!(a.opacity, 1.0);
+            assert_eq!(a.dash, LineStyle::Solid);
+            assert_eq!(a.bubble, BubbleKind::Tail);
+            assert_eq!(a.step_tail, StepTail::Pointer);
+            assert_eq!(a.text_style, TextStyle::default());
+        }
+        assert!(!doc.show_properties && doc.title.is_empty());
+        assert_eq!(serde_json::to_string(&doc).unwrap(), json);
+    }
+
+    #[test]
+    fn new_options_and_shapes_round_trip() {
+        let mut a = ann(Shape::Polygon {
+            points: vec![Pt::new(0.0, 0.0), Pt::new(50.0, 0.0), Pt::new(0.0, 50.0)],
+            closed: true,
+            start: EndShape::Round,
+            end: EndShape::Arrow,
+        });
+        a.opacity = 0.5;
+        a.dash = LineStyle::DashDot;
+        a.text_style = TextStyle {
+            bold: true,
+            italic: true,
+            underline: true,
+            align: TextAlign::Center,
+            glow: Some(Glow {
+                color: Rgba::rgb(255, 255, 255),
+                size: 4.0,
+                blur: 2.0,
+            }),
+        };
+        a.step_format = StepFormat::Roman;
+        a.step_tail = StepTail::Pin;
+        a.text_color = Some(Rgba::rgb(1, 2, 3));
+        let doc = Doc {
+            annotations: vec![
+                a,
+                ann(Shape::Bracket {
+                    a: Pt::new(0.0, 0.0),
+                    b: Pt::new(10.0, 40.0),
+                    side: BracketSide::Bottom,
+                }),
+                ann(Shape::Image {
+                    a: Pt::new(0.0, 0.0),
+                    b: Pt::new(20.0, 10.0),
+                    file: "image.png".into(),
+                    ratio: 2.0,
+                }),
+                ann(Shape::Label {
+                    at: Pt::new(5.0, 5.0),
+                    text: "BROUILLON".into(),
+                    size: 30.0,
+                }),
+            ],
+            title: "Titre".into(),
+            description: "Description".into(),
+            show_properties: true,
+            ..Doc::default()
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.contains(r#""file":"image.png""#), "{json}");
+        assert!(!json.contains("base64"));
+        assert_eq!(serde_json::from_str::<Doc>(&json).unwrap(), doc);
+        assert!(doc.has_banner());
+    }
+
+    #[test]
+    fn step_labels_follow_their_format() {
+        let label = |n, f| step_label(n, f);
+        assert_eq!(label(12, StepFormat::Number), "12");
+        assert_eq!(label(1, StepFormat::Letter), "A");
+        assert_eq!(label(26, StepFormat::Letter), "Z");
+        assert_eq!(label(28, StepFormat::Letter), "AB");
+        assert_eq!(label(4, StepFormat::Roman), "iv");
+        assert_eq!(label(14, StepFormat::Roman), "xiv");
+    }
+
+    #[test]
+    fn renumbering_counts_from_the_lowest_in_order() {
+        let mut doc = Doc::default();
+        for number in [5, 9, 2] {
+            doc.annotations.push(ann(Shape::Step {
+                at: Pt::default(),
+                number,
+                tail: None,
+            }));
+        }
+        doc.annotations
+            .insert(1, ann(rect(Pt::default(), Pt::new(9.0, 9.0))));
+        assert!(doc.renumber_steps());
+        let numbers: Vec<u32> = doc
+            .annotations
+            .iter()
+            .filter_map(|a| match a.shape {
+                Shape::Step { number, .. } => Some(number),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(numbers, [2, 3, 4]);
+        assert!(!doc.renumber_steps());
+    }
+
+    #[test]
+    fn polygons_are_hit_on_edges_and_inside_when_filled() {
+        let mut p = ann(Shape::Polygon {
+            points: vec![
+                Pt::new(0.0, 0.0),
+                Pt::new(100.0, 0.0),
+                Pt::new(100.0, 100.0),
+            ],
+            closed: false,
+            start: EndShape::Plain,
+            end: EndShape::Plain,
+        });
+        assert!(p.hit(Pt::new(50.0, 1.0), 2.0, no_text));
+        assert!(
+            !p.hit(Pt::new(50.0, 50.0), 2.0, no_text),
+            "côté fermant absent"
+        );
+        if let Shape::Polygon { closed, .. } = &mut p.shape {
+            *closed = true;
+        }
+        assert!(p.hit(Pt::new(50.0, 50.0), 2.0, no_text), "côté fermant");
+        assert!(!p.hit(Pt::new(80.0, 30.0), 2.0, no_text));
+        p.fill = true;
+        assert!(p.hit(Pt::new(80.0, 30.0), 2.0, no_text), "intérieur plein");
+        p.move_handle(1, Pt::new(120.0, 0.0));
+        assert_eq!(p.handles()[1], Pt::new(120.0, 0.0));
+    }
+
+    #[test]
+    fn images_keep_their_ratio_when_resized() {
+        let mut img = ann(Shape::Image {
+            a: Pt::new(0.0, 0.0),
+            b: Pt::new(40.0, 20.0),
+            file: "x.png".into(),
+            ratio: 2.0,
+        });
+        img.move_handle(2, Pt::new(100.0, 30.0));
+        let b = img.bounds(no_text);
+        assert_eq!((b.min, b.max), (Pt::new(0.0, 0.0), Pt::new(100.0, 50.0)));
+        assert_eq!(
+            keep_ratio(Pt::new(0.0, 0.0), Pt::new(-10.0, -80.0), 0.5),
+            Pt::new(-40.0, -80.0)
+        );
+    }
+
+    #[test]
+    fn tails_follow_the_bubble_and_step_options() {
+        let mut b = ann(Shape::Bubble {
+            at: Pt::new(0.0, 0.0),
+            text: "x".into(),
+            size: 10.0,
+            tail: Pt::new(0.0, 200.0),
+        });
+        assert_eq!(b.handles().len(), 1);
+        b.bubble = BubbleKind::NoTail;
+        assert!(b.handles().is_empty());
+        assert!(b.bounds(no_text).max.y < 100.0, "la pointe ne compte plus");
+        let mut s = ann(Shape::Step {
+            at: Pt::new(50.0, 50.0),
+            number: 1,
+            tail: None,
+        });
+        s.step_tail = StepTail::Pin;
+        assert!(s.bounds(no_text).max.y > 50.0 + step_radius(4.0) * 1.5);
+        assert!(s.handles().is_empty());
+    }
+
+    #[test]
+    fn align_and_distribute_move_the_right_boxes() {
+        let boxes = [
+            Bounds::from_corners(Pt::new(0.0, 0.0), Pt::new(10.0, 10.0)),
+            Bounds::from_corners(Pt::new(30.0, 40.0), Pt::new(50.0, 50.0)),
+            Bounds::from_corners(Pt::new(100.0, 5.0), Pt::new(110.0, 15.0)),
+        ];
+        assert_eq!(
+            align_offsets(&boxes, Align::Left),
+            [(0.0, 0.0), (-30.0, 0.0), (-100.0, 0.0)]
+        );
+        assert_eq!(
+            align_offsets(&boxes, Align::Bottom),
+            [(0.0, 40.0), (0.0, 0.0), (0.0, 35.0)]
+        );
+        assert_eq!(align_offsets(&boxes, Align::Center)[0], (50.0, 0.0));
+        // Largeurs 10 + 20 + 10 sur 110 : écarts de 35.
+        let d = distribute_offsets(&boxes, true);
+        assert_eq!(d, [(0.0, 0.0), (15.0, 0.0), (0.0, 0.0)]);
+        assert_eq!(distribute_offsets(&boxes[..2], true), [(0.0, 0.0); 2]);
     }
 
     #[test]

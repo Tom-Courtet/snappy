@@ -91,13 +91,7 @@ impl Orientation {
 
 /// Image d'une capture avec ses annotations (`.json` à côté), comme à l'export.
 pub fn flattened(path: &Path) -> Result<RgbaImage> {
-    let base = history::read_png(path)?;
-    let doc = history::load_doc(path);
-    Ok(if doc.annotations.is_empty() {
-        base
-    } else {
-        crate::render::render(&base, &doc.annotations)
-    })
+    crate::effects::flatten_file(path)
 }
 
 /// Fichiers à partager : les captures annotées sont aplaties dans un dossier
