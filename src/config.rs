@@ -48,6 +48,35 @@ pub struct Config {
     /// Raccourcis des autres actions (OCR, vidéo, espace de travail…). Absent ou
     /// vide : aucun raccourci.
     pub extra_hotkeys: BTreeMap<Mode, String>,
+
+    // --- Lot « Réglages, raccourcis, après capture » ---
+    /// Ce qui suit une capture (« Ensuite »). Défaut : le comportement de Snappy.
+    pub after_capture: AfterCapture,
+    /// Ce que la capture met dans le presse-papiers. Défaut : comme Snappy.
+    pub clipboard: ClipboardContent,
+    /// Format des images enregistrées (« Enregistrer »). Défaut : PNG.
+    pub image_format: ImageFormat,
+    /// Qualité JPEG (1 à 100), si `image_format` vaut `jpeg`.
+    pub jpeg_quality: u8,
+    /// Nom des nouvelles captures (et donc de leurs exports).
+    pub file_name: FileName,
+    /// Lancer Snappy à l'ouverture de session. Le système n'est modifié que quand
+    /// l'utilisateur coche ou décoche la case.
+    pub launch_at_login: bool,
+    /// Garder le contexte de la capture (fenêtre, application) : écrit par la capture.
+    pub capture_context: bool,
+    /// Filigrane ajouté à chaque capture, sous forme d'annotation modifiable.
+    pub watermark: Watermark,
+    /// Compte à rebours avant la capture (lu par la capture).
+    pub countdown_before_capture: bool,
+    /// Demander avant de supprimer une capture (espace de travail).
+    pub confirm_delete: bool,
+    /// OCR : copier le texte sans ouvrir de fenêtre.
+    pub ocr_copy_without_window: bool,
+    /// QR code : ouvrir les liens dans le navigateur.
+    pub qr_open_browser: bool,
+    /// Enregistrement vidéo (lu par l'enregistrement vidéo).
+    pub video: VideoSettings,
 }
 
 impl Default for Config {
@@ -65,6 +94,19 @@ impl Default for Config {
             delay_seconds: 3,
             save_dir: None,
             extra_hotkeys: BTreeMap::new(),
+            after_capture: AfterCapture::default(),
+            clipboard: ClipboardContent::default(),
+            image_format: ImageFormat::default(),
+            jpeg_quality: 90,
+            file_name: FileName::default(),
+            launch_at_login: false,
+            capture_context: false,
+            watermark: Watermark::default(),
+            countdown_before_capture: false,
+            confirm_delete: true,
+            ocr_copy_without_window: false,
+            qr_open_browser: true,
+            video: VideoSettings::default(),
         }
     }
 }
@@ -90,6 +132,317 @@ impl Config {
             Mode::Previous => &mut self.previous_hotkey,
             other => self.extra_hotkeys.entry(other).or_default(),
         }
+    }
+}
+
+// --- Lot « Réglages, raccourcis, après capture » ---------------------------------
+
+/// Ce qui suit une capture (« Ensuite », comme dans Screenpresso).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfterCapture {
+    /// Comportement actuel de Snappy : rien après « Copier », « Enregistrer » et la
+    /// zone précédente, l'éditeur après la capture de l'écran.
+    #[default]
+    Snappy,
+    /// Ouvrir l'espace de travail.
+    Workspace,
+    /// Ouvrir l'éditeur après chaque capture.
+    Editor,
+    /// Notification « Capture enregistrée ».
+    Notify,
+    /// Ne rien faire.
+    Nothing,
+}
+
+impl AfterCapture {
+    pub const ALL: [Self; 5] = [
+        Self::Snappy,
+        Self::Workspace,
+        Self::Editor,
+        Self::Notify,
+        Self::Nothing,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Snappy => "Comme Snappy (par défaut)",
+            Self::Workspace => "Ouvrir l'espace de travail",
+            Self::Editor => "Ouvrir l'éditeur",
+            Self::Notify => "Afficher une notification",
+            Self::Nothing => "Ne rien faire",
+        }
+    }
+}
+
+/// Contenu du presse-papiers après une capture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardContent {
+    /// Comportement actuel de Snappy : l'image après « Copier », l'écran entier et
+    /// la zone précédente ; rien après « Enregistrer » et « Annoter ».
+    #[default]
+    Snappy,
+    /// L'image et le fichier (coller dans le Finder colle le fichier).
+    ImageAndPath,
+    /// L'image, après chaque capture.
+    Image,
+    /// Le chemin du fichier, en texte.
+    Path,
+    /// Rien (le bouton « Copier » copie quand même l'image).
+    Nothing,
+}
+
+impl ClipboardContent {
+    pub const ALL: [Self; 5] = [
+        Self::Snappy,
+        Self::ImageAndPath,
+        Self::Image,
+        Self::Path,
+        Self::Nothing,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Snappy => "Comme Snappy (par défaut)",
+            Self::ImageAndPath => "Image et chemin",
+            Self::Image => "Image",
+            Self::Path => "Chemin",
+            Self::Nothing => "Ne rien faire",
+        }
+    }
+}
+
+/// Format des images enregistrées.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageFormat {
+    #[default]
+    Png,
+    Jpeg,
+    Bmp,
+    Tiff,
+    Gif,
+    Webp,
+}
+
+impl ImageFormat {
+    pub const ALL: [Self; 6] = [
+        Self::Png,
+        Self::Jpeg,
+        Self::Bmp,
+        Self::Tiff,
+        Self::Gif,
+        Self::Webp,
+    ];
+
+    /// Extension des fichiers, sans le point.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Bmp => "bmp",
+            Self::Tiff => "tif",
+            Self::Gif => "gif",
+            Self::Webp => "webp",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Png => "PNG (par défaut)",
+            Self::Jpeg => "JPEG",
+            Self::Bmp => "BMP",
+            Self::Tiff => "TIFF",
+            Self::Gif => "GIF",
+            Self::Webp => "WebP",
+        }
+    }
+
+    /// Format d'après l'extension d'un fichier (sans tenir compte de la casse).
+    /// Pour les autres lots (« Enregistrer sous… », espace de travail).
+    #[allow(dead_code)]
+    pub fn from_path(path: &Path) -> Option<Self> {
+        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+        Some(match ext.as_str() {
+            "png" => Self::Png,
+            "jpg" | "jpeg" => Self::Jpeg,
+            "bmp" => Self::Bmp,
+            "tif" | "tiff" => Self::Tiff,
+            "gif" => Self::Gif,
+            "webp" => Self::Webp,
+            _ => return None,
+        })
+    }
+}
+
+/// Nom des nouvelles captures.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileName {
+    /// `snappy-AAAA-MM-JJ-HHMMSS` (nom actuel).
+    #[default]
+    Date,
+    /// `snappy_1`, `snappy_2`…
+    Counter,
+    /// Modèle avec jetons (voir [`crate::history::TOKENS`]).
+    Custom(String),
+}
+
+/// Coin (ou centre) d'un filigrane.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    #[default]
+    BottomRight,
+    Center,
+}
+
+impl Corner {
+    pub const ALL: [Self; 5] = [
+        Self::TopLeft,
+        Self::TopRight,
+        Self::BottomLeft,
+        Self::BottomRight,
+        Self::Center,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TopLeft => "En haut à gauche",
+            Self::TopRight => "En haut à droite",
+            Self::BottomLeft => "En bas à gauche",
+            Self::BottomRight => "En bas à droite",
+            Self::Center => "Au centre",
+        }
+    }
+}
+
+/// Filigrane : un texte ajouté à chaque capture, annotation modifiable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Watermark {
+    pub enabled: bool,
+    pub text: String,
+    pub position: Corner,
+    /// Opacité en pour cent (0 à 100).
+    pub opacity: u8,
+}
+
+impl Default for Watermark {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            text: String::new(),
+            position: Corner::BottomRight,
+            opacity: 60,
+        }
+    }
+}
+
+/// Qualité des vidéos (libellés et images par seconde de Screenpresso).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoQuality {
+    VeryLow,
+    Low,
+    #[default]
+    Normal,
+    High,
+    VeryHigh,
+    Max,
+}
+
+impl VideoQuality {
+    pub const ALL: [Self; 6] = [
+        Self::VeryLow,
+        Self::Low,
+        Self::Normal,
+        Self::High,
+        Self::VeryHigh,
+        Self::Max,
+    ];
+
+    /// Images par seconde (lu par l'enregistrement vidéo).
+    #[allow(dead_code)]
+    pub fn fps(self) -> u32 {
+        match self {
+            Self::VeryLow => 12,
+            Self::Low => 15,
+            Self::Normal => 30,
+            Self::High | Self::VeryHigh | Self::Max => 60,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::VeryLow => "Très basse (12 i/s)",
+            Self::Low => "Basse (15 i/s)",
+            Self::Normal => "Normale (30 i/s, par défaut)",
+            Self::High => "Haute (60 i/s)",
+            Self::VeryHigh => "Très haute (60 i/s)",
+            Self::Max => "Maximale (60 i/s, débit maximal)",
+        }
+    }
+}
+
+/// Réglages de l'enregistrement vidéo (lus par le lot « Vidéo »).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VideoSettings {
+    pub quality: VideoQuality,
+    /// Arrêt automatique après ce nombre de minutes (aucun : pas d'arrêt).
+    pub stop_after_minutes: Option<u32>,
+    /// Compte à rebours avant l'enregistrement.
+    pub countdown: bool,
+    /// Enregistrer le micro.
+    pub mic: bool,
+    /// Nom du micro (vide : celui du système).
+    pub mic_device: String,
+    /// Enregistrer le son de l'ordinateur.
+    pub system_audio: bool,
+    /// Entourer le pointeur.
+    pub highlight_cursor: bool,
+    /// Marquer les clics.
+    pub mark_clicks: bool,
+    /// Ouvrir la vidéo après l'enregistrement.
+    pub show_preview_after: bool,
+    /// Incruster la webcam.
+    pub webcam: bool,
+}
+
+impl Default for VideoSettings {
+    fn default() -> Self {
+        Self {
+            quality: VideoQuality::Normal,
+            stop_after_minutes: None,
+            countdown: false,
+            mic: false,
+            mic_device: String::new(),
+            system_audio: false,
+            highlight_cursor: false,
+            mark_clicks: false,
+            show_preview_after: true,
+            webcam: false,
+        }
+    }
+}
+
+impl Config {
+    /// Remet les raccourcis par défaut (les nouvelles actions n'en ont pas).
+    pub fn restore_default_hotkeys(&mut self) {
+        self.region_hotkey = DEFAULT_HOTKEYS.region.into();
+        self.screen_hotkey = DEFAULT_HOTKEYS.screen.into();
+        self.previous_hotkey = DEFAULT_HOTKEYS.previous.into();
+        self.extra_hotkeys.clear();
+    }
+
+    /// Qualité JPEG utilisable (1 à 100).
+    pub fn jpeg_quality(&self) -> u8 {
+        self.jpeg_quality.clamp(1, 100)
     }
 }
 
@@ -166,6 +519,20 @@ impl Store {
         Ok(Self {
             root: root.to_owned(),
         })
+    }
+
+    /// Dossier de données (réglages « Ouvrir le dossier des données »).
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Config sur le disque, sans rien écrire : absente ou illisible, la config par
+    /// défaut (lectures annexes, depuis l'historique par exemple).
+    pub fn peek(&self) -> Config {
+        fs::read_to_string(self.config_path())
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
     }
 
     pub fn config_path(&self) -> PathBuf {
@@ -347,6 +714,111 @@ mod tests {
         config.hotkey_mut(Mode::Screen).clear();
         assert_eq!(config.screen_hotkey, "");
         assert_eq!(config.region_hotkey, DEFAULT_HOTKEYS.region);
+    }
+
+    // --- Lot « Réglages, raccourcis, après capture » ---
+
+    /// Une config écrite avant ce lot (sans les nouveaux champs) garde le
+    /// comportement actuel.
+    #[test]
+    fn old_config_files_keep_current_behavior() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        fs::write(
+            store.config_path(),
+            r#"{
+  "region_hotkey": "super+shift+Digit2",
+  "screen_hotkey": "super+shift+Digit1",
+  "previous_hotkey": "alt+super+shift+Digit2",
+  "capture_cursor": true,
+  "delay_seconds": 5,
+  "save_dir": null,
+  "extra_hotkeys": {}
+}"#,
+        )
+        .unwrap();
+        let config = store.load();
+        assert!(config.capture_cursor);
+        assert_eq!(config.delay_seconds, 5);
+        assert_eq!(config.after_capture, AfterCapture::Snappy);
+        assert_eq!(config.clipboard, ClipboardContent::Snappy);
+        assert_eq!(config.image_format, ImageFormat::Png);
+        assert_eq!(config.file_name, FileName::Date);
+        assert!(!config.launch_at_login);
+        assert!(!config.watermark.enabled);
+        assert!(config.confirm_delete);
+        assert!(config.qr_open_browser);
+        assert_eq!(config.video, VideoSettings::default());
+        assert_eq!(config.video.quality.fps(), 30);
+        // Un fichier vide aussi.
+        fs::write(store.config_path(), "{}").unwrap();
+        assert_eq!(store.load(), Config::default());
+    }
+
+    #[test]
+    fn new_settings_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let config = Config {
+            after_capture: AfterCapture::Workspace,
+            clipboard: ClipboardContent::ImageAndPath,
+            image_format: ImageFormat::Jpeg,
+            jpeg_quality: 75,
+            file_name: FileName::Custom("{app}-{n}".into()),
+            watermark: Watermark {
+                enabled: true,
+                text: "© Moi".into(),
+                position: Corner::TopLeft,
+                opacity: 40,
+            },
+            video: VideoSettings {
+                quality: VideoQuality::Max,
+                stop_after_minutes: Some(10),
+                mic_device: "Micro USB".into(),
+                ..VideoSettings::default()
+            },
+            ..Config::default()
+        };
+        store.save(&config).unwrap();
+        assert_eq!(store.load(), config);
+        assert_eq!(store.peek(), config);
+        let text = fs::read_to_string(store.config_path()).unwrap();
+        assert!(text.contains(r#""custom": "{app}-{n}""#), "{text}");
+    }
+
+    #[test]
+    fn peek_never_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.peek(), Config::default());
+        assert!(!store.config_path().exists());
+    }
+
+    #[test]
+    fn formats_by_extension() {
+        for format in ImageFormat::ALL {
+            let path = PathBuf::from(format!("a.{}", format.extension()));
+            assert_eq!(ImageFormat::from_path(&path), Some(format));
+        }
+        assert_eq!(
+            ImageFormat::from_path(Path::new("x/B.JPEG")),
+            Some(ImageFormat::Jpeg)
+        );
+        assert_eq!(
+            ImageFormat::from_path(Path::new("c.tiff")),
+            Some(ImageFormat::Tiff)
+        );
+        assert_eq!(ImageFormat::from_path(Path::new("d.txt")), None);
+        assert_eq!(ImageFormat::from_path(Path::new("sans-extension")), None);
+    }
+
+    #[test]
+    fn restore_default_hotkeys_clears_new_actions() {
+        let mut config = Config::default();
+        *config.hotkey_mut(Mode::Region) = "F13".into();
+        *config.hotkey_mut(Mode::Ocr) = "F14".into();
+        config.restore_default_hotkeys();
+        assert_eq!(config, Config::default());
     }
 
     #[test]
