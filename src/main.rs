@@ -81,7 +81,18 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None | Some("--background") => {
+            let background = std::env::args().nth(1).is_some();
             if ipc::request(&store.socket_path(), &Request::Ping).is_ok() {
+                // Relancé depuis le Finder ou le Launchpad alors qu'il tourne : on
+                // montre l'espace de travail, comme Screenpresso (rien au démarrage
+                // de session, `--background`).
+                if !background {
+                    let open = Request::Capture {
+                        mode: Mode::Workspace,
+                        delay: 0,
+                    };
+                    let _ = ipc::request(&store.socket_path(), &open);
+                }
                 println!("Snappy tourne déjà (icône dans la barre des menus).");
                 return Ok(());
             }

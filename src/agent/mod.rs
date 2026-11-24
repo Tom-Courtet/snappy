@@ -20,6 +20,8 @@
 mod foreground;
 pub mod hotkeys;
 mod layout;
+#[cfg(target_os = "macos")]
+mod reopen;
 mod tray;
 
 use std::path::PathBuf;
@@ -380,6 +382,17 @@ impl App {
     fn start(&mut self) {
         let config = self.store.load();
         self.register_hotkeys(&config);
+        // Snappy rouvert depuis le Finder alors qu'il tourne : l'espace de travail.
+        #[cfg(target_os = "macos")]
+        {
+            let launcher = Arc::clone(&self.launcher);
+            reopen::install(move || {
+                log::info!("Snappy rouvert : espace de travail");
+                if let Err(e) = launcher.capture(Mode::Workspace, 0) {
+                    log::error!("{e:#}");
+                }
+            });
+        }
 
         let launcher = Arc::clone(&self.launcher);
         let store = self.store.clone();
