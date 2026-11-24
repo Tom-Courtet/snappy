@@ -27,6 +27,7 @@ mod platform;
 mod render;
 mod scroll;
 mod settings;
+mod share;
 mod ui;
 mod video;
 mod vision;
@@ -55,6 +56,14 @@ Usage :
   snappy --settings       ouvre les réglages (raccourcis, délai, dossier)
   snappy --export <png> <sortie.png>
                           aplatit une capture et ses annotations (.json à côté)
+  snappy --share <fichier>...
+                          feuille de partage (AirDrop, Mail, Messages…)
+  snappy --mail <fichier>...
+                          nouveau courriel avec les fichiers joints
+  snappy --print <png> [--filename] [--portrait|--landscape] [--fit]
+                          imprime une capture (avec ses annotations)
+  snappy --document <png>...
+                          générateur de documents (PDF, HTML, GIF animé)
   snappy --quit           arrête l'agent
   snappy --version";
 
@@ -107,6 +116,11 @@ fn main() -> Result<()> {
             );
             export(&input, &output)
         }
+        // Lot « Partage, impression, documents ».
+        Some("--share") => share::run_share(args.map(PathBuf::from).collect()),
+        Some("--mail") => share::run_mail(args.map(PathBuf::from).collect()),
+        Some("--print") => share::run_print(args),
+        Some("--document") => share::run_document(store, args.map(PathBuf::from).collect()),
         Some("--version") => {
             println!("snappy {}", env!("CARGO_PKG_VERSION"));
             Ok(())
