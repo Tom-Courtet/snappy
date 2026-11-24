@@ -1,6 +1,7 @@
 # Snappy × Screenpresso : état des lieux
 
 > Écrit le 24/11/2026 à partir de `screenpresso-bilan.md` (le « bilan »), de l'inventaire du code et d'une étude de faisabilité macOS/Windows.
+> **Mise à jour du 24/11/2026 (soir) : les 9 lots sont fusionnés** sur la branche `screenpresso` (voir § 8 Avancement et les nouvelles décisions D27–D41). 315 tests unitaires passent, zéro avertissement (clippy compris), la cible Windows compile.
 > Mis à jour à la fin de chaque lot. Branche de travail : `screenpresso`. Le code d'avant les ajouts est sur `main` (commit `809bf81`).
 
 ## 1. Résumé
@@ -352,3 +353,48 @@ Classées par domaine. Les plus bloquantes sont en tête. « Bloque » indique c
 - Les écrans d'échelles différentes, les Spaces et les applications en plein écran.
 - Les permissions TCC du .app après chaque build (signature ad hoc), le micro et l'Accessibilité.
 - Le comportement de Screenpresso pour la capture défilante, la webcam et les sous-titres (non observés, § 13.6).
+
+
+## 8. Avancement (fin des lots du 24/11/2026)
+
+Tout ce qui suit est **fusionné et compilé** (macOS + Windows), couvert par des tests unitaires quand c'est de la logique pure. **Rien n'a encore été essayé à la souris** : l'écran du Mac était verrouillé ou sans autorisation pendant les essais des agents. C'est la première chose à vérifier (§ 9).
+
+| Lot | Statut | Ce qui est fait | Limites connues |
+|---|---|---|---|
+| Socle | fait | 13 actions avec raccourci (aucun raccourci par défaut pour les nouvelles), `--capture <action>` | – |
+| A · Icône + Espace de travail | fait | Clic gauche → fenêtre (second clic la ferme), clic droit → menu dans l'ordre Screenpresso avec icônes de couleur et raccourcis ; fenêtre 893 × 591 : vignettes annotées en cache, recherche, filtres type/date, tri, taille des vignettes, espaces de travail (sous-dossiers), menu contextuel complet, Corbeille récupérable, renommer, déplacer, fusionner, enregistrer sous (6 formats), aperçu rapide, glisser vers le Finder/Mail, dépôt de fichiers, toujours devant, fermeture auto, **Publier** (partage, courriel, impression, document) | Windows : pas de glisser sortant ; vignettes vidéo seulement sur Mac |
+| B · Réglages + après capture | fait | Onglets Général / Capture / Vidéo / Raccourcis / Avancé ; « Ensuite » (Snappy par défaut, espace de travail, éditeur, notification, rien) ; presse-papiers (image, chemin, les deux, rien) ; format (PNG par défaut, JPEG, BMP, TIFF, GIF, WebP) ; nom (date, numéro, modèle avec jetons) ; démarrer avec la session ; filigrane ; réglages vidéo ; export/import/réinitialisation | Démarrage avec la session : seulement depuis Snappy.app |
+| C · Capture | fait | `pick` pour OCR/QR/vidéo/défilement, F écran entier, O pipette, D hexadécimal/décimal, tous les écrans, fenêtre active, pipette seule, contexte (appli, titre) si activé, réticules (option) | Fenêtre active = découpe de l'écran figé (pas de coins transparents) |
+| D · Défilement | fait | Séance en direct ~15 i/s, assemblage vertical et horizontal robuste aux en-têtes/pieds fixes, aller-retour, aperçu, Terminé/Recommencer/Annuler, défilement automatique en option | Pas de 2D (cartes) ; pas de cadre affiché autour de la zone |
+| E · Éditeur, annotations | fait | Opacité, pointillés, extérieur assombri/flou, texte gras/italique/souligné/aligné/halo, 3 bulles, pastilles 1/A/i + liens + renumérotation, polygone (G), accolade (J), tampons Souris/Texte/Mes tampons, images insérées (glisser, coller, menu), multisélection + aligner/répartir, couper/copier/coller d'annotations (⌘X/⌘V), préréglages par outil (en plus des favoris), barre de titre (‹ ›, Valider, Propriétés, Ouvrir, Supprimer l'image, plein écran), curseur de zoom | Voir D27, D29, D30 |
+| F · Éditeur, image | fait | Recadrer, pivoter (⌘R), miroirs, couper une bande (6 modes), redimensionner (5 modes, DPI), zone de travail fixe/auto, bordure et effets avec aperçu (bord, coins, déchiré, N&B, reflet, ombre, rotation), changer l'image principale — tout non destructif | Effets visibles à l'export, pas sur le canevas |
+| G · Vision | fait | OCR (Vision / Windows.Media.Ocr), QR + codes-barres, détourage (macOS 14+), données sensibles (courriels, cartes avec Luhn, IBAN, IP, clés d'API, téléphones) ; branchés dans l'éditeur (menu « … ») | Windows : pas de détourage, QR seulement |
+| H · Vidéo | fait (macOS 15+) | Zone → MP4 H.264 (ScreenCaptureKit), barre (micro, son système, tailles, pause, refaire, chrono), compte à rebours, arrêt auto, clics mis en évidence, lecteur (découpe, vitesse, muet, image courante, GIF) ; le raccourci vidéo arrête l'enregistrement en cours | **Jamais essayé en vrai** (écran verrouillé) ; pas de webcam, sous-titres, halo du curseur ; rien sous Windows |
+| I · Partage | fait | Feuille de partage macOS, courriel avec pièce jointe, impression, générateur PDF/HTML/GIF | Windows : partage = afficher dans l'Explorateur |
+| Branchements | fait | Publier (espace de travail), OCR/flou/détourage/partage (éditeur), Ensuite → espace de travail via l'agent, réglages capture/contexte/vidéo reliés, un seul aplatissement des captures pour tout | – |
+
+**Ce qui a été touché dans l'existant** (en plus des ajouts) :
+- le clic gauche de l'icône et l'ordre du menu (§ 11.6, demandé) ;
+- la fenêtre des réglages réorganisée en onglets (toutes les sections d'origine gardées, elle s'ouvre toujours sur Raccourcis) ;
+- deux gestes de l'outil Sélection de l'éditeur (voir **D27**) ;
+- `Alt+⌫` supprimait déjà l'annotation : inchangé.
+
+**À savoir** : un test du lot A a mis deux fichiers d'essai vides dans ta Corbeille (`snappy-essai-corbeille.png` et `.json`). Tu peux les supprimer.
+
+## 9. Nouvelles décisions (remontées par les lots)
+
+- **D27 · Éditeur, outil Sélection : deux gestes ont changé de sens.** Maj+clic ajoute/retire de la sélection (avant : sélection simple) et glisser dans le vide trace un rectangle de sélection (avant : désélectionnait). Options : a) garder (comme la plupart des éditeurs) ; b) revenir à l'ancien comportement et mettre la multisélection derrière ⌘+clic. **Reco : a)**, mais c'est un changement de l'existant : à toi de dire.
+- **D28 · Icônes manquantes** (polygone, accolade, souris, vidéo, QR, OCR, défilement…) : il faut régénérer la police Lucide (télécharger `lucide-static` sur npm + fontTools). En attendant, icônes voisines ou texte. **Reco : oui**, une seule régénération.
+- **D29 · ⌘+ / ⌘− pour la taille du texte** : egui s'en sert pour zoomer toute l'interface ; boutons A− / A+ à la place. **Reco : garder.**
+- **D30 · Plein écran de l'éditeur** : F11 est pris par macOS (« Afficher le bureau »). Ajouter ⌃⌘F ? **Reco : oui.**
+- **D31 · ⌘Z et les retouches d'image** (recadrage, rotation…) : aujourd'hui « Annuler la dernière retouche » à part. **Reco : les mettre dans ⌘Z.**
+- **D32 · « Changer l'image principale »** garde le chemin du fichier choisi. **Reco : copier le fichier dans `<capture>.assets/`.**
+- **D33 · Espace de travail : tri** du plus ancien au plus récent (Screenpresso) ou le plus récent en haut ? Et fermeture de la fenêtre quand on ouvre l'éditeur (Screenpresso) ? **Reco : récent en haut ; garder la fermeture.**
+- **D34 · Vidéo : le raccourci** démarre/arrête (Screenpresso : pause/reprise). Mémoriser les cases Micro / Son système de la barre ? **Reco : garder démarrer/arrêter ; mémoriser.**
+- **D35 · Vidéo sous macOS 14** : pas de vidéo (SCRecordingOutput exige 15). Voir D18.
+- **D36 · `snappy --export x.jpg`** écrit du PNG : choisir le format d'après l'extension ? **Reco : oui.**
+- **D37 · Notification « Capture enregistrée »** passe par osascript et s'affiche au nom de « Éditeur de script ». Faire une vraie notification (UserNotifications, demande d'autorisation) ? **Reco : oui, plus tard.**
+- **D38 · Cadre en pointillés** autour de la zone pendant la capture défilante (comme la vidéo). **Reco : oui, petit lot.**
+- **D39 · Données sensibles** : inclure les empreintes hexadécimales (hash de commit) ? **Reco : non.**
+- **D40 · Windows** : glisser-déposer sortant (OLE), feuille de partage, courriel MAPI, vidéo (`windows-capture`), détourage. **Reco : vidéo d'abord (D17), le reste si besoin.**
+- **D41 · « Afficher l'espace de travail après une capture »** (§ 11.6) : c'est le choix « Ensuite → Ouvrir l'espace de travail » de l'onglet Capture, désactivé par défaut. Te convient-il sous cette forme ?
