@@ -187,6 +187,7 @@ mod tests {
                 PALETTE[0].0,
                 4.0,
             )],
+            ..Doc::default()
         };
         save_doc(&path, &doc).unwrap();
         assert_eq!(load_doc(&path), doc);

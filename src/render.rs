@@ -5,18 +5,21 @@
 //! glyphes (ab_glyph : Outfit pour le texte, Lucide pour les tampons), avec
 //! l'anticrénelage de tiny-skia.
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use ab_glyph::{Font, FontRef, GlyphId, OutlineCurve, PxScale, ScaleFont};
 use image::RgbaImage;
 use tiny_skia::{
     BlendMode, FillRule, FilterQuality, IntSize, LineCap, LineJoin, Paint, PathBuilder, Pattern,
-    Pixmap, PixmapPaint, Rect, SpreadMode, Stroke, Transform,
+    Pixmap, PixmapPaint, Rect, SpreadMode, Stroke, StrokeDash, Transform,
 };
 
 use crate::model::{
-    Annotation, ArrowStyle, Bounds, Pt, Rgba, Shape, arrow_points, bend_control, bubble_box,
-    step_radius, text_padding,
+    Annotation, ArrowStyle, Bounds, BracketSide, BubbleKind, Doc, EndShape, LineStyle, Pt, Rgba,
+    Shape, StepFormat, StepTail, TextAlign, TextStyle, arrow_points, bend_control, bubble_box,
+    label_box, pin_tip, step_label, step_radius, text_padding,
 };
 
 /// Police des textes et des pastilles (Outfit SemiBold).
@@ -65,8 +68,19 @@ fn line_width<F: Font>(font: &impl ScaleFont<F>, line: &str) -> f32 {
     width
 }
 
-/// Image d'origine + annotations, aplaties.
+/// Image d'origine + annotations, aplaties. Les images insérées
+/// ([`Shape::Image`]) n'y sont que des cadres : voir [`render_with`].
 pub fn render(base: &RgbaImage, annotations: &[Annotation]) -> RgbaImage {
+    render_with(base, annotations, None)
+}
+
+/// Comme [`render`], avec le dossier des images insérées (`<capture>.assets/`, voir
+/// [`assets_dir`]).
+pub fn render_with(
+    base: &RgbaImage,
+    annotations: &[Annotation],
+    assets: Option<&Path>,
+) -> RgbaImage {
     let (w, h) = base.dimensions();
     let Some(mut pixmap) = to_pixmap(base) else {
         return base.clone();
@@ -78,10 +92,25 @@ pub fn render(base: &RgbaImage, annotations: &[Annotation]) -> RgbaImage {
         .any(|a| matches!(a.shape, Shape::Magnifier { .. }));
     let source = needs_source.then(|| pixmap.clone());
     for ann in annotations {
-        if ann.shadow && ann.can_have_shadow() {
-            draw_shadow(&mut pixmap, ann);
+        // Opacité : l'annotation est posée normalement, puis mélangée à l'image
+        // d'avant (effets sur les pixels compris).
+        let before = (ann.opacity < 1.0).then(|| pixmap.clone());
+        if ann.affects_outside() {
+            draw_outside(&mut pixmap, ann);
         }
-        draw(&mut pixmap, ann, source.as_ref(), Transform::identity());
+        if ann.shadow && ann.can_have_shadow() {
+            draw_shadow(&mut pixmap, ann, assets);
+        }
+        draw(
+            &mut pixmap,
+            ann,
+            source.as_ref(),
+            assets,
+            Transform::identity(),
+        );
+        if let Some(before) = before {
+            mix(&mut pixmap, &before, ann.opacity.max(0.0));
+        }
     }
     let mut out = RgbaImage::new(w, h);
     for (dst, src) in out.pixels_mut().zip(pixmap.pixels()) {
@@ -174,13 +203,21 @@ fn triangle(a: Pt, b: Pt, c: Pt) -> Option<tiny_skia::Path> {
 
 /// Dessine une annotation. `source` : l'image d'origine (loupes) ; `ts` : décalage
 /// (dessin de l'ombre dans un tampon à part).
-fn draw(pixmap: &mut Pixmap, ann: &Annotation, source: Option<&Pixmap>, ts: Transform) {
+fn draw(
+    pixmap: &mut Pixmap,
+    ann: &Annotation,
+    source: Option<&Pixmap>,
+    assets: Option<&Path>,
+    ts: Transform,
+) {
     let color = ann.color;
     let w = ann.width;
+    let dash = ann.dash;
+    let ts_text = &ann.text_style;
     match &ann.shape {
         Shape::Line { from, to } => {
             if let Some(path) = polyline(&[*from, *to]) {
-                pixmap.stroke_path(&path, &paint(color), &stroke(w), ts, None);
+                pixmap.stroke_path(&path, &paint(color), &dashed(stroke(w), dash), ts, None);
             }
         }
         Shape::Arrow {
@@ -188,7 +225,7 @@ fn draw(pixmap: &mut Pixmap, ann: &Annotation, source: Option<&Pixmap>, ts: Tran
             to,
             style,
             bend,
-        } => draw_arrow(pixmap, *from, *to, *style, *bend, color, w, ts),
+        } => draw_arrow(pixmap, *from, *to, *style, *bend, color, w, dash, ts),
         Shape::Rect { a, b, radius } => {
             if let Some(path) = rounded_rect(Bounds::from_corners(*a, *b), *radius) {
                 if ann.fill {
@@ -199,7 +236,7 @@ fn draw(pixmap: &mut Pixmap, ann: &Annotation, source: Option<&Pixmap>, ts: Tran
                     s.line_cap = LineCap::Square;
                     s.line_join = LineJoin::Miter;
                 }
-                pixmap.stroke_path(&path, &paint(color), &s, ts, None);
+                pixmap.stroke_path(&path, &paint(color), &dashed(s, dash), ts, None);
             }
         }
         Shape::Ellipse { a, b } => {
@@ -208,7 +245,7 @@ fn draw(pixmap: &mut Pixmap, ann: &Annotation, source: Option<&Pixmap>, ts: Tran
                 if ann.fill {
                     pixmap.fill_path(&path, &paint(color), FillRule::Winding, ts, None);
                 }
-                pixmap.stroke_path(&path, &paint(color), &stroke(w), ts, None);
+                pixmap.stroke_path(&path, &paint(color), &dashed(stroke(w), dash), ts, None);
             }
         }
         Shape::Highlight { a, b } => {
@@ -242,7 +279,7 @@ fn draw(pixmap: &mut Pixmap, ann: &Annotation, source: Option<&Pixmap>, ts: Tran
         }
         Shape::Pen { points } => {
             if let Some(path) = polyline(points) {
-                pixmap.stroke_path(&path, &paint(color), &stroke(w), ts, None);
+                pixmap.stroke_path(&path, &paint(color), &dashed(stroke(w), dash), ts, None);
             }
         }
         Shape::Text {
@@ -250,7 +287,7 @@ fn draw(pixmap: &mut Pixmap, ann: &Annotation, source: Option<&Pixmap>, ts: Tran
             text,
             size,
             boxed: false,
-        } => draw_text(pixmap, *at, text, *size, color, ts),
+        } => draw_text(pixmap, *at, text, *size, color, ts_text, ts),
         Shape::Text {
             at,
             text,
@@ -266,7 +303,7 @@ fn draw(pixmap: &mut Pixmap, ann: &Annotation, source: Option<&Pixmap>, ts: Tran
             if let Some(path) = rounded_rect(b, size * 0.3) {
                 pixmap.fill_path(&path, &paint(color), FillRule::Winding, ts, None);
             }
-            fill_text(pixmap, *at, text, *size, color.contrast(), ts);
+            fill_text(pixmap, *at, text, *size, color.contrast(), ts_text, ts);
         }
         Shape::Bubble {
             at,
@@ -275,23 +312,37 @@ fn draw(pixmap: &mut Pixmap, ann: &Annotation, source: Option<&Pixmap>, ts: Tran
             tail,
         } => {
             let b = bubble_box(*at, text, *size, &text_size);
-            draw_pointer(
-                pixmap,
-                b.center(),
-                *tail,
-                (size * 0.9).min(b.width() / 3.0),
-                color,
-                ts,
-            );
-            if let Some(path) = rounded_rect(b, size * 0.45) {
+            if ann.bubble == BubbleKind::Tail {
+                draw_pointer(
+                    pixmap,
+                    b.center(),
+                    *tail,
+                    (size * 0.9).min(b.width() / 3.0),
+                    color,
+                    ts,
+                );
+            }
+            let corner = if ann.bubble == BubbleKind::Simple {
+                size * 0.12
+            } else {
+                size * 0.45
+            };
+            if let Some(path) = rounded_rect(b, corner) {
                 pixmap.fill_path(&path, &paint(color), FillRule::Winding, ts, None);
             }
-            fill_text(pixmap, *at, text, *size, color.contrast(), ts);
+            fill_text(pixmap, *at, text, *size, color.contrast(), ts_text, ts);
         }
         Shape::Step { at, number, tail } => {
             let r = step_radius(w);
-            if let Some(t) = tail {
-                draw_pointer(pixmap, *at, *t, r * 1.1, color, ts);
+            match (ann.step_tail, tail) {
+                (StepTail::Pointer, Some(t)) => draw_pointer(pixmap, *at, *t, r * 1.1, color, ts),
+                (StepTail::Line | StepTail::Arrow, Some(t)) => {
+                    draw_step_connector(pixmap, *at, *t, r, ann.step_tail, color, w, ts);
+                }
+                (StepTail::Pin, _) => {
+                    draw_pointer(pixmap, *at, pin_tip(*at, w), r * 1.5, color, ts);
+                }
+                _ => {}
             }
             if let Some(circle) = PathBuilder::from_circle(at.x, at.y, r) {
                 pixmap.fill_path(&circle, &paint(color), FillRule::Winding, ts, None);
@@ -305,11 +356,25 @@ fn draw(pixmap: &mut Pixmap, ann: &Annotation, source: Option<&Pixmap>, ts: Tran
                     None,
                 );
             }
-            let label = number.to_string();
-            let size = r * 1.15;
-            let (tw, th) = text_size(&label, size);
+            let label = step_label(*number, ann.step_format);
+            let mut size = r * 1.15;
+            let (mut tw, mut th) = text_size(&label, size);
+            // Lettres et chiffres romains peuvent être longs : réduits pour tenir.
+            if ann.step_format != StepFormat::Number && tw > r * 1.6 {
+                size *= r * 1.6 / tw;
+                (tw, th) = text_size(&label, size);
+            }
             let text_at = Pt::new(at.x - tw / 2.0, at.y - th / 2.0);
-            fill_text(pixmap, text_at, &label, size, color.contrast(), ts);
+            let ink = ann.text_color.unwrap_or_else(|| color.contrast());
+            fill_text(
+                pixmap,
+                text_at,
+                &label,
+                size,
+                ink,
+                &TextStyle::default(),
+                ts,
+            );
         }
         Shape::Magnifier {
             source: src,
@@ -317,7 +382,35 @@ fn draw(pixmap: &mut Pixmap, ann: &Annotation, source: Option<&Pixmap>, ts: Tran
             at,
             zoom,
         } => draw_magnifier(pixmap, source, *src, *radius, *at, *zoom, color, w, ts),
-        Shape::Stamp { at, icon, size } => draw_stamp(pixmap, *at, icon, *size, color, ts),
+        Shape::Stamp { at, icon, size } => {
+            if let Some(button) = icon.strip_prefix(MOUSE_PREFIX) {
+                draw_mouse(pixmap, *at, button, *size, color, ts);
+            } else {
+                draw_stamp(pixmap, *at, icon, *size, color, ts);
+            }
+        }
+        Shape::Polygon {
+            points,
+            closed,
+            start,
+            end,
+        } => draw_polygon(pixmap, ann, points, *closed, *start, *end, ts),
+        Shape::Bracket { a, b, side } => {
+            if let Some(path) = bracket_path(Bounds::from_corners(*a, *b), *side) {
+                pixmap.stroke_path(&path, &paint(color), &dashed(stroke(w), dash), ts, None);
+            }
+        }
+        Shape::Image { a, b, file, .. } => {
+            draw_image(
+                pixmap,
+                Bounds::from_corners(*a, *b),
+                file,
+                assets,
+                color,
+                ts,
+            );
+        }
+        Shape::Label { at, text, size } => draw_label(pixmap, *at, text, *size, color, ts),
     }
 }
 
@@ -391,6 +484,7 @@ fn draw_arrow(
     bend: Option<Pt>,
     color: Rgba,
     width: f32,
+    dash: LineStyle,
     ts: Transform,
 ) {
     let chord = from.dist(to);
@@ -420,7 +514,7 @@ fn draw_arrow(
         shaft.reverse();
     }
     if let Some(path) = polyline(&shaft) {
-        pixmap.stroke_path(&path, &paint(color), &stroke(width), ts, None);
+        pixmap.stroke_path(&path, &paint(color), &dashed(stroke(width), dash), ts, None);
     }
     if heads_at_end && let Some((ux, uy)) = end_dir {
         arrow_head(pixmap, to, ux, uy, head, color, width, ts);
@@ -656,7 +750,7 @@ fn box_blur(pixmap: &mut Pixmap, b: Bounds, radius: u32) {
 
 /// Ombre portée douce : l'annotation dessinée en noir translucide dans un tampon à
 /// sa taille, floutée, puis posée un peu décalée sous l'annotation.
-fn draw_shadow(pixmap: &mut Pixmap, ann: &Annotation) {
+fn draw_shadow(pixmap: &mut Pixmap, ann: &Annotation, assets: Option<&Path>) {
     let blur = (ann.width * 1.2).clamp(3.0, 24.0);
     let offset = (ann.width * 0.7).clamp(2.0, 14.0);
     let margin = ann.width * 2.0 + blur * 3.0 + 4.0;
@@ -674,7 +768,13 @@ fn draw_shadow(pixmap: &mut Pixmap, ann: &Annotation) {
         return;
     };
     // Sans l'image d'origine : une loupe y est un simple disque, seule la forme compte.
-    draw(&mut layer, ann, None, Transform::from_translate(-x0, -y0));
+    draw(
+        &mut layer,
+        ann,
+        None,
+        assets,
+        Transform::from_translate(-x0, -y0),
+    );
     // Noir, alpha réduit (prémultiplié : r = g = b = 0).
     for px in layer.data_mut().as_chunks_mut::<4>().0 {
         let a = (f32::from(px[3]) * SHADOW_ALPHA) as u8;
@@ -698,23 +798,61 @@ fn draw_shadow(pixmap: &mut Pixmap, ann: &Annotation) {
 }
 
 /// Texte avec un contour de la couleur contrastée : lisible sur n'importe quel fond.
-fn draw_text(pixmap: &mut Pixmap, at: Pt, text: &str, size: f32, color: Rgba, ts: Transform) {
-    if let Some(path) = text_path(at, text, size) {
-        let halo = color.contrast();
-        pixmap.stroke_path(
-            &path,
-            &paint(Rgba(halo.0, halo.1, halo.2, 220)),
-            &stroke((size * 0.12).max(1.5)),
-            ts,
-            None,
-        );
-        pixmap.fill_path(&path, &paint(color), FillRule::Winding, ts, None);
+/// Avec une lueur (`style.glow`), la lueur remplace ce contour.
+fn draw_text(
+    pixmap: &mut Pixmap,
+    at: Pt,
+    text: &str,
+    size: f32,
+    color: Rgba,
+    style: &TextStyle,
+    ts: Transform,
+) {
+    if let Some(path) = styled_text_path(at, text, size, style) {
+        if style.glow.is_none() {
+            let halo = color.contrast();
+            pixmap.stroke_path(
+                &path,
+                &paint(Rgba(halo.0, halo.1, halo.2, 220)),
+                &stroke((size * 0.12).max(1.5)),
+                ts,
+                None,
+            );
+        }
+        paint_text(pixmap, &path, size, color, style, ts);
     }
 }
 
-fn fill_text(pixmap: &mut Pixmap, at: Pt, text: &str, size: f32, color: Rgba, ts: Transform) {
-    if let Some(path) = text_path(at, text, size) {
-        pixmap.fill_path(&path, &paint(color), FillRule::Winding, ts, None);
+fn fill_text(
+    pixmap: &mut Pixmap,
+    at: Pt,
+    text: &str,
+    size: f32,
+    color: Rgba,
+    style: &TextStyle,
+    ts: Transform,
+) {
+    if let Some(path) = styled_text_path(at, text, size, style) {
+        paint_text(pixmap, &path, size, color, style, ts);
+    }
+}
+
+/// Lueur éventuelle, puis le texte, épaissi s'il est en gras.
+fn paint_text(
+    pixmap: &mut Pixmap,
+    path: &tiny_skia::Path,
+    size: f32,
+    color: Rgba,
+    style: &TextStyle,
+    ts: Transform,
+) {
+    if let Some(glow) = style.glow {
+        draw_glow(pixmap, path, glow, ts);
+    }
+    pixmap.fill_path(path, &paint(color), FillRule::Winding, ts, None);
+    if style.bold {
+        // Faux gras : le contour des glyphes, de la couleur du texte.
+        pixmap.stroke_path(path, &paint(color), &stroke(size * BOLD), ts, None);
     }
 }
 
@@ -760,17 +898,27 @@ fn push_outline(
     }
 }
 
-/// Contours des glyphes d'un texte, coin haut gauche en `at`.
-fn text_path(at: Pt, text: &str, size: f32) -> Option<tiny_skia::Path> {
+/// Contours des glyphes d'un texte, coin haut gauche en `at`, avec l'italique,
+/// l'alignement des lignes et le soulignement de `style` (le style par défaut donne
+/// le tracé d'origine).
+fn styled_text_path(at: Pt, text: &str, size: f32, style: &TextStyle) -> Option<tiny_skia::Path> {
     let font = FONT.as_scaled(PxScale::from(size));
     let (sx, sy) = (font.h_scale_factor(), font.v_scale_factor());
+    let slant = if style.italic { ITALIC_SLANT } else { 0.0 };
+    let block = text_size(text, size).0;
     let mut pb = PathBuilder::new();
     for (row, line) in text.split('\n').enumerate() {
         let baseline = at.y
             + row as f32 * size * LINE_HEIGHT
             + font.ascent()
             + (size * LINE_HEIGHT - font.height()) / 2.0;
-        let mut x = at.x;
+        let width = line_width(&font, line);
+        let shift = match style.align {
+            TextAlign::Left => 0.0,
+            TextAlign::Center => (block - width) / 2.0,
+            TextAlign::Right => block - width,
+        };
+        let mut x = at.x + shift;
         let mut prev: Option<GlyphId> = None;
         for c in line.chars() {
             let id = font.glyph_id(c);
@@ -780,14 +928,565 @@ fn text_path(at: Pt, text: &str, size: f32) -> Option<tiny_skia::Path> {
             if let Some(outline) = FONT.outline(id) {
                 let left = x;
                 push_outline(&mut pb, &outline.curves, |p| {
-                    (left + p.x * sx, baseline - p.y * sy)
+                    (left + p.x * sx + p.y * sy * slant, baseline - p.y * sy)
                 });
             }
             x += font.h_advance(id);
             prev = Some(id);
         }
+        if style.underline
+            && width > 0.0
+            && let Some(r) = Rect::from_xywh(
+                at.x + shift,
+                baseline + size * 0.1,
+                width,
+                (size * 0.07).max(1.0),
+            )
+        {
+            pb.push_rect(r);
+        }
     }
     pb.finish()
+}
+
+// --- Lot « Éditeur : annotations » -----------------------------------------------------
+
+/// Pente de l'italique (décalage horizontal par pixel de hauteur).
+const ITALIC_SLANT: f32 = 0.2;
+/// Épaisseur du contour du faux gras, en fraction de la taille de police.
+const BOLD: f32 = 0.05;
+/// Préfixe des tampons « souris » dessinés en vecteurs (`souris:gauche`…).
+pub const MOUSE_PREFIX: &str = "souris:";
+
+/// Dossier des images insérées dans une capture : `<capture>.assets/`.
+pub fn assets_dir(image: &Path) -> PathBuf {
+    image.with_extension("assets")
+}
+
+/// Trait pointillé ou tiret-point, proportionné à l'épaisseur.
+fn dashed(mut s: Stroke, dash: LineStyle) -> Stroke {
+    let w = s.width;
+    let array = match dash {
+        LineStyle::Solid => return s,
+        // Bouts ronds : des tirets de longueur quasi nulle font des points.
+        LineStyle::Dotted => vec![0.001, w * 2.0],
+        LineStyle::DashDot => vec![w * 3.0, w * 2.0, 0.001, w * 2.0],
+    };
+    s.line_cap = LineCap::Round;
+    s.dash = StrokeDash::new(array, 0.0);
+    s
+}
+
+/// `pixmap` = mélange de `before` (l'image avant l'annotation) et de `pixmap` (après),
+/// à `opacity` près.
+fn mix(pixmap: &mut Pixmap, before: &Pixmap, opacity: f32) {
+    let t = opacity.clamp(0.0, 1.0);
+    for (after, old) in pixmap.data_mut().iter_mut().zip(before.data()) {
+        let (a, o) = (f32::from(*after), f32::from(*old));
+        *after = (o + (a - o) * t).round() as u8;
+    }
+}
+
+/// Tout l'extérieur d'un rectangle ou d'une ellipse : image moins la forme (règle
+/// pair-impair).
+fn outside_path(pixmap: &Pixmap, ann: &Annotation) -> Option<tiny_skia::Path> {
+    let shape = match &ann.shape {
+        Shape::Rect { a, b, radius } => rounded_rect(Bounds::from_corners(*a, *b), *radius)?,
+        Shape::Ellipse { a, b } => PathBuilder::from_oval(rect(Bounds::from_corners(*a, *b))?)?,
+        _ => return None,
+    };
+    let mut pb = PathBuilder::new();
+    pb.push_rect(Rect::from_xywh(
+        0.0,
+        0.0,
+        pixmap.width() as f32,
+        pixmap.height() as f32,
+    )?);
+    pb.push_path(&shape);
+    pb.finish()
+}
+
+/// Effets « extérieur » d'un rectangle ou d'une ellipse : flou, puis voile sombre
+/// (comme le projecteur).
+fn draw_outside(pixmap: &mut Pixmap, ann: &Annotation) {
+    let Some(path) = outside_path(pixmap, ann) else {
+        return;
+    };
+    if ann.blur_outside {
+        let mut blurred = pixmap.clone();
+        let all = Bounds {
+            min: Pt::new(0.0, 0.0),
+            max: Pt::new(pixmap.width() as f32, pixmap.height() as f32),
+        };
+        let radius = blur_radius(ann.width);
+        for _ in 0..3 {
+            box_blur(&mut blurred, all, radius);
+        }
+        let shader = Pattern::new(
+            blurred.as_ref(),
+            SpreadMode::Pad,
+            FilterQuality::Nearest,
+            1.0,
+            Transform::identity(),
+        );
+        let p = Paint {
+            shader,
+            anti_alias: true,
+            ..Paint::default()
+        };
+        pixmap.fill_path(&path, &p, FillRule::EvenOdd, Transform::identity(), None);
+    }
+    if ann.dim_outside {
+        let dim = paint(Rgba(0, 0, 0, SPOTLIGHT_ALPHA));
+        pixmap.fill_path(&path, &dim, FillRule::EvenOdd, Transform::identity(), None);
+    }
+}
+
+/// Lueur d'un texte : contour épais de la couleur de la lueur, flouté, sous le texte.
+fn draw_glow(pixmap: &mut Pixmap, path: &tiny_skia::Path, glow: crate::model::Glow, ts: Transform) {
+    let b = path.bounds();
+    let margin = glow.size + glow.blur * 3.0 + 2.0;
+    let (x0, y0) = (
+        (b.left() + ts.tx - margin).floor(),
+        (b.top() + ts.ty - margin).floor(),
+    );
+    let (w, h) = (
+        (b.width() + margin * 2.0).ceil() as u32 + 1,
+        (b.height() + margin * 2.0).ceil() as u32 + 1,
+    );
+    if w > pixmap.width() * 2 + 64 || h > pixmap.height() * 2 + 64 {
+        return;
+    }
+    let Some(mut layer) = Pixmap::new(w, h) else {
+        return;
+    };
+    let local = ts.post_translate(-x0, -y0);
+    let p = paint(glow.color);
+    layer.fill_path(path, &p, FillRule::Winding, local, None);
+    if glow.size > 0.0 {
+        layer.stroke_path(path, &p, &stroke(glow.size * 2.0), local, None);
+    }
+    let all = Bounds {
+        min: Pt::new(0.0, 0.0),
+        max: Pt::new(w as f32, h as f32),
+    };
+    let radius = (glow.blur / 2.0).round() as u32;
+    if radius > 0 {
+        for _ in 0..3 {
+            box_blur(&mut layer, all, radius);
+        }
+    }
+    pixmap.draw_pixmap(
+        x0 as i32,
+        y0 as i32,
+        layer.as_ref(),
+        &PixmapPaint::default(),
+        Transform::identity(),
+        None,
+    );
+}
+
+/// Lien d'une pastille : trait terminé par un point ou par une pointe.
+#[allow(clippy::too_many_arguments)]
+fn draw_step_connector(
+    pixmap: &mut Pixmap,
+    at: Pt,
+    tail: Pt,
+    r: f32,
+    kind: StepTail,
+    color: Rgba,
+    width: f32,
+    ts: Transform,
+) {
+    let Some((ux, uy)) = unit(at, tail) else {
+        return;
+    };
+    let line_w = (width * 0.6).max(2.0);
+    let head = (line_w * 4.0).max(12.0).min(at.dist(tail) * 0.5);
+    let start = at.offset(ux * r, uy * r);
+    let end = if kind == StepTail::Arrow {
+        tail.offset(-ux * head * 0.6, -uy * head * 0.6)
+    } else {
+        tail
+    };
+    if at.dist(tail) > r
+        && let Some(path) = polyline(&[start, end])
+    {
+        pixmap.stroke_path(&path, &paint(color), &stroke(line_w), ts, None);
+    }
+    if kind == StepTail::Arrow {
+        arrow_head(pixmap, tail, ux, uy, head, color, line_w, ts);
+    } else if let Some(dot) = PathBuilder::from_circle(tail.x, tail.y, (width * 1.2).max(4.0)) {
+        pixmap.fill_path(&dot, &paint(color), FillRule::Winding, ts, None);
+    }
+}
+
+/// Polygone ou ligne brisée, avec ses bouts (flèche, rond) quand elle est ouverte.
+fn draw_polygon(
+    pixmap: &mut Pixmap,
+    ann: &Annotation,
+    points: &[Pt],
+    closed: bool,
+    start: EndShape,
+    end: EndShape,
+    ts: Transform,
+) {
+    let (color, w) = (ann.color, ann.width);
+    if points.len() < 2 {
+        return;
+    }
+    let head = (w * 4.0).max(12.0);
+    let mut line = points.to_vec();
+    if !closed {
+        if end == EndShape::Arrow {
+            line = trim_end(&line, head * 0.6);
+        }
+        if start == EndShape::Arrow {
+            line.reverse();
+            line = trim_end(&line, head * 0.6);
+            line.reverse();
+        }
+    }
+    let mut pb = PathBuilder::new();
+    pb.move_to(line[0].x, line[0].y);
+    for p in &line[1..] {
+        pb.line_to(p.x, p.y);
+    }
+    if closed {
+        pb.close();
+    }
+    let Some(path) = pb.finish() else { return };
+    if ann.fill {
+        // Plein : la forme est toujours fermée pour le remplissage.
+        let mut fill = PathBuilder::new();
+        fill.move_to(points[0].x, points[0].y);
+        for p in &points[1..] {
+            fill.line_to(p.x, p.y);
+        }
+        fill.close();
+        if let Some(fill) = fill.finish() {
+            pixmap.fill_path(&fill, &paint(color), FillRule::EvenOdd, ts, None);
+        }
+    }
+    pixmap.stroke_path(&path, &paint(color), &dashed(stroke(w), ann.dash), ts, None);
+    if closed {
+        return;
+    }
+    let n = points.len();
+    for (shape, tip, back) in [
+        (end, points[n - 1], points[n - 2]),
+        (start, points[0], points[1]),
+    ] {
+        match shape {
+            EndShape::Plain => {}
+            EndShape::Arrow => {
+                if let Some((ux, uy)) = unit(back, tip) {
+                    let len = head.min(tip.dist(back) * 0.8);
+                    arrow_head(pixmap, tip, ux, uy, len, color, w, ts);
+                }
+            }
+            EndShape::Round => {
+                if let Some(dot) = PathBuilder::from_circle(tip.x, tip.y, (w * 1.4).max(4.0)) {
+                    pixmap.fill_path(&dot, &paint(color), FillRule::Winding, ts, None);
+                }
+            }
+        }
+    }
+}
+
+/// Accolade inscrite dans `b`, pointe du côté `side`.
+fn bracket_path(b: Bounds, side: BracketSide) -> Option<tiny_skia::Path> {
+    // Tracé dans un repère (u le long de l'accolade, v vers la pointe), puis placé.
+    let vertical = matches!(side, BracketSide::Left | BracketSide::Right);
+    let (len, depth) = if vertical {
+        (b.height(), b.width())
+    } else {
+        (b.width(), b.height())
+    };
+    let to = |u: f32, v: f32| -> (f32, f32) {
+        match side {
+            BracketSide::Left => (b.max.x - v, b.min.y + u),
+            BracketSide::Right => (b.min.x + v, b.min.y + u),
+            BracketSide::Top => (b.min.x + u, b.max.y - v),
+            BracketSide::Bottom => (b.min.x + u, b.min.y + v),
+        }
+    };
+    let mid = depth / 2.0;
+    let r = (len / 4.0).min(mid.max(1.0) * 2.0);
+    let half = len / 2.0;
+    let mut pb = PathBuilder::new();
+    let (x, y) = to(0.0, 0.0);
+    pb.move_to(x, y);
+    let mut quad = |c: (f32, f32), e: (f32, f32)| {
+        let (cx, cy) = to(c.0, c.1);
+        let (ex, ey) = to(e.0, e.1);
+        pb.quad_to(cx, cy, ex, ey);
+    };
+    quad((0.0, mid), (r, mid));
+    let (x, y) = to(half - r, mid);
+    pb.line_to(x, y);
+    let mut quad = |c: (f32, f32), e: (f32, f32)| {
+        let (cx, cy) = to(c.0, c.1);
+        let (ex, ey) = to(e.0, e.1);
+        pb.quad_to(cx, cy, ex, ey);
+    };
+    quad((half, mid), (half, depth));
+    quad((half, mid), (half + r, mid));
+    let (x, y) = to(len - r, mid);
+    pb.line_to(x, y);
+    let (cx, cy) = to(len, mid);
+    let (ex, ey) = to(len, 0.0);
+    pb.quad_to(cx, cy, ex, ey);
+    pb.finish()
+}
+
+/// Images insérées, lues une fois par processus (le nom d'un fichier inséré ne
+/// change jamais de contenu).
+static IMAGES: LazyLock<Mutex<HashMap<PathBuf, Option<Arc<Pixmap>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn load_asset(path: &Path) -> Option<Arc<Pixmap>> {
+    let mut cache = IMAGES.lock().ok()?;
+    cache
+        .entry(path.to_owned())
+        .or_insert_with(|| {
+            let img = image::open(path).ok()?.to_rgba8();
+            to_pixmap(&img).map(Arc::new)
+        })
+        .clone()
+}
+
+/// Image insérée, étirée dans `b`. Introuvable : un cadre barré à la place.
+fn draw_image(
+    pixmap: &mut Pixmap,
+    b: Bounds,
+    file: &str,
+    assets: Option<&Path>,
+    color: Rgba,
+    ts: Transform,
+) {
+    let Some(r) = rect(b) else { return };
+    let img = assets.and_then(|dir| load_asset(&dir.join(file)));
+    match img {
+        Some(img) => {
+            let (iw, ih) = (img.width() as f32, img.height() as f32);
+            let fit = Transform::from_scale(b.width() / iw, b.height() / ih)
+                .post_translate(b.min.x, b.min.y);
+            let shader = Pattern::new(
+                img.as_ref().as_ref(),
+                SpreadMode::Pad,
+                FilterQuality::Bicubic,
+                1.0,
+                fit,
+            );
+            let p = Paint {
+                shader,
+                anti_alias: true,
+                ..Paint::default()
+            };
+            pixmap.fill_rect(r, &p, ts, None);
+        }
+        None => {
+            pixmap.fill_rect(r, &paint(Rgba(128, 128, 128, 90)), ts, None);
+            let thin = stroke(2.0);
+            let path = PathBuilder::from_rect(r);
+            pixmap.stroke_path(&path, &paint(color), &thin, ts, None);
+            for (a, c) in [
+                (b.min, b.max),
+                (Pt::new(b.max.x, b.min.y), Pt::new(b.min.x, b.max.y)),
+            ] {
+                if let Some(line) = polyline(&[a, c]) {
+                    pixmap.stroke_path(&line, &paint(color), &thin, ts, None);
+                }
+            }
+        }
+    }
+}
+
+/// Tampon texte : capitales en gras dans un cadre arrondi, à la manière d'un tampon
+/// encreur.
+fn draw_label(pixmap: &mut Pixmap, at: Pt, text: &str, size: f32, color: Rgba, ts: Transform) {
+    let b = label_box(at, text, size, &text_size);
+    if let Some(frame) = rounded_rect(b, size * 0.3) {
+        pixmap.fill_path(
+            &frame,
+            &paint(Rgba(255, 255, 255, 150)),
+            FillRule::Winding,
+            ts,
+            None,
+        );
+        pixmap.stroke_path(&frame, &paint(color), &stroke(size * 0.12), ts, None);
+    }
+    let (tw, th) = text_size(text, size);
+    let style = TextStyle {
+        bold: true,
+        ..TextStyle::default()
+    };
+    fill_text(
+        pixmap,
+        Pt::new(at.x - tw / 2.0, at.y - th / 2.0),
+        text,
+        size,
+        color,
+        &style,
+        ts,
+    );
+}
+
+/// Tampon souris en vecteurs : le corps et le bouton `button` (gauche, droite,
+/// molette) rempli.
+fn draw_mouse(pixmap: &mut Pixmap, at: Pt, button: &str, size: f32, color: Rgba, ts: Transform) {
+    let (w, h) = (size * 0.62, size * 0.92);
+    let body = Bounds {
+        min: at.offset(-w / 2.0, -h / 2.0),
+        max: at.offset(w / 2.0, h / 2.0),
+    };
+    let split = body.min.y + h * 0.42;
+    let line = (size * 0.06).max(1.5);
+    let halo = color.contrast();
+    let Some(outline) = rounded_rect(body, w / 2.0) else {
+        return;
+    };
+    pixmap.fill_path(
+        &outline,
+        &paint(Rgba(halo.0, halo.1, halo.2, 230)),
+        FillRule::Winding,
+        ts,
+        None,
+    );
+    // Bouton enfoncé : la moitié haute du côté voulu, découpée dans le corps.
+    let half = match button {
+        "gauche" => Some(Bounds {
+            min: body.min,
+            max: Pt::new(at.x, split),
+        }),
+        "droite" => Some(Bounds {
+            min: Pt::new(at.x, body.min.y),
+            max: Pt::new(body.max.x, split),
+        }),
+        _ => None,
+    };
+    if let Some(half) = half
+        && let Some(r) = rect(half)
+        && let Some(mask) = {
+            let mut m = tiny_skia::Mask::new(pixmap.width(), pixmap.height());
+            if let Some(m) = &mut m {
+                m.fill_path(&outline, FillRule::Winding, true, ts);
+            }
+            m
+        }
+    {
+        pixmap.fill_rect(r, &paint(color), ts, Some(&mask));
+    }
+    pixmap.stroke_path(&outline, &paint(color), &stroke(line), ts, None);
+    let mut pb = PathBuilder::new();
+    pb.move_to(body.min.x, split);
+    pb.line_to(body.max.x, split);
+    pb.move_to(at.x, body.min.y);
+    pb.line_to(at.x, split);
+    if let Some(p) = pb.finish() {
+        pixmap.stroke_path(&p, &paint(color), &stroke(line), ts, None);
+    }
+    if button == "molette"
+        && let Some(wheel) = rounded_rect(
+            Bounds {
+                min: Pt::new(at.x - w * 0.09, body.min.y + h * 0.12),
+                max: Pt::new(at.x + w * 0.09, body.min.y + h * 0.3),
+            },
+            w * 0.09,
+        )
+    {
+        pixmap.fill_path(&wheel, &paint(color), FillRule::Winding, ts, None);
+    }
+}
+
+/// Hauteur du bandeau des propriétés (titre, description) pour une image de cette
+/// largeur ; 0 sans bandeau.
+pub fn banner_height(doc: &Doc, width: u32) -> u32 {
+    if !doc.has_banner() {
+        return 0;
+    }
+    let (title, desc, pad) = banner_sizes(width);
+    let mut h = pad * 2.0;
+    if !doc.title.trim().is_empty() {
+        h += text_size(doc.title.trim(), title).1;
+    }
+    if !doc.description.trim().is_empty() {
+        if !doc.title.trim().is_empty() {
+            h += pad * 0.4;
+        }
+        h += text_size(doc.description.trim(), desc).1;
+    }
+    h.ceil() as u32
+}
+
+/// Tailles du titre, de la description et marge du bandeau.
+fn banner_sizes(width: u32) -> (f32, f32, f32) {
+    let title = (width as f32 / 30.0).clamp(16.0, 60.0);
+    (title, title * 0.62, title * 0.6)
+}
+
+/// Image annotée, avec le bandeau des propriétés au-dessus quand il est activé.
+pub fn render_doc(base: &RgbaImage, doc: &Doc, assets: Option<&Path>) -> RgbaImage {
+    let img = render_with(base, &doc.annotations, assets);
+    let banner = banner_height(doc, img.width());
+    if banner == 0 {
+        return img;
+    }
+    let (w, h) = img.dimensions();
+    let Some(mut pixmap) = Pixmap::new(w, h + banner) else {
+        return img;
+    };
+    pixmap.fill(tiny_skia::Color::WHITE);
+    let (title, desc, pad) = banner_sizes(w);
+    let mut y = pad;
+    let id = Transform::identity();
+    if !doc.title.trim().is_empty() {
+        let style = TextStyle {
+            bold: true,
+            ..TextStyle::default()
+        };
+        let t = doc.title.trim();
+        fill_text(
+            &mut pixmap,
+            Pt::new(pad, y),
+            t,
+            title,
+            Rgba::rgb(20, 20, 24),
+            &style,
+            id,
+        );
+        y += text_size(t, title).1 + pad * 0.4;
+    }
+    if !doc.description.trim().is_empty() {
+        let d = doc.description.trim();
+        let style = TextStyle::default();
+        fill_text(
+            &mut pixmap,
+            Pt::new(pad, y),
+            d,
+            desc,
+            Rgba::rgb(80, 80, 90),
+            &style,
+            id,
+        );
+    }
+    if let Some(image) = to_pixmap(&img) {
+        pixmap.draw_pixmap(
+            0,
+            banner as i32,
+            image.as_ref(),
+            &PixmapPaint::default(),
+            id,
+            None,
+        );
+    }
+    let mut out = RgbaImage::new(w, h + banner);
+    for (dst, src) in out.pixels_mut().zip(pixmap.pixels()) {
+        let c = src.demultiply();
+        dst.0 = [c.red(), c.green(), c.blue(), c.alpha()];
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1121,5 +1820,379 @@ mod tests {
         assert!(out.get_pixel(62, 62).0[0] < 250, "ombre en bas à droite");
         assert_eq!(out.get_pixel(15, 15).0, WHITE_PX, "rien en haut à gauche");
         assert_eq!(out.get_pixel(40, 40).0, RED_PX, "l'objet reste dessus");
+    }
+
+    // --- Lot « Éditeur : annotations » -----------------------------------------------
+
+    use crate::model::{Doc, Glow};
+
+    fn rect_ann(a: Pt, b: Pt) -> Annotation {
+        ann(Shape::Rect { a, b, radius: 0.0 }, RED)
+    }
+
+    /// Les options à leur valeur par défaut ne changent rien au rendu d'origine.
+    #[test]
+    fn default_options_render_like_before() {
+        let img = white(120, 90);
+        let anns = [
+            rect_ann(Pt::new(10.0, 10.0), Pt::new(60.0, 50.0)),
+            ann(
+                Shape::Text {
+                    at: Pt::new(5.0, 50.0),
+                    text: "Ab\nc".into(),
+                    size: 18.0,
+                    boxed: false,
+                },
+                RED,
+            ),
+        ];
+        let out = render(&img, &anns);
+        let mut explicit = anns.clone();
+        for a in &mut explicit {
+            a.opacity = 1.0;
+            a.dash = LineStyle::Solid;
+            a.text_style = TextStyle::default();
+        }
+        assert_eq!(render(&img, &explicit), out);
+        let doc = Doc {
+            annotations: anns.to_vec(),
+            title: "Titre".into(),
+            show_properties: false,
+            ..Doc::default()
+        };
+        assert_eq!(render_doc(&img, &doc, None), out, "bandeau désactivé");
+    }
+
+    #[test]
+    fn dashes_leave_gaps_in_the_stroke() {
+        let line = |dash| {
+            let mut a = ann(
+                Shape::Line {
+                    from: Pt::new(5.0, 20.0),
+                    to: Pt::new(115.0, 20.0),
+                },
+                RED,
+            );
+            a.dash = dash;
+            render(&white(120, 40), &[a])
+        };
+        let solid = line(LineStyle::Solid);
+        let dotted = line(LineStyle::Dotted);
+        let dash_dot = line(LineStyle::DashDot);
+        let row = |img: &RgbaImage| {
+            (5..115)
+                .filter(|&x| img.get_pixel(x, 20).0 == RED_PX)
+                .count()
+        };
+        assert!(row(&solid) > 100);
+        assert!(row(&dotted) < row(&solid) * 2 / 3, "{}", row(&dotted));
+        assert!(row(&dash_dot) < row(&solid) && row(&dash_dot) > row(&dotted));
+    }
+
+    #[test]
+    fn opacity_blends_with_the_image() {
+        let mut a = rect_ann(Pt::new(10.0, 10.0), Pt::new(50.0, 50.0));
+        a.fill = true;
+        a.opacity = 0.5;
+        let px = render(&white(60, 60), &[a]).get_pixel(30, 30).0;
+        assert_eq!(px[0], 255);
+        assert!((120..=135).contains(&px[1]), "moitié de blanc : {px:?}");
+    }
+
+    #[test]
+    fn outside_effects_dim_and_blur_only_outside() {
+        let mut img = white(100, 100);
+        for y in 0..100 {
+            for x in 0..50 {
+                img.put_pixel(x, y, Px([0, 0, 0, 255]));
+            }
+        }
+        let mut a = ann(
+            Shape::Ellipse {
+                a: Pt::new(60.0, 30.0),
+                b: Pt::new(95.0, 70.0),
+            },
+            RED,
+        );
+        a.dim_outside = true;
+        let out = render(&img, &[a.clone()]);
+        assert_eq!(out.get_pixel(78, 50).0, WHITE_PX, "intérieur intact");
+        assert!(out.get_pixel(55, 5).0[0] < 150, "extérieur assombri");
+        a.dim_outside = false;
+        a.blur_outside = true;
+        let out = render(&img, &[a]);
+        let edge = out.get_pixel(50, 10).0[0];
+        assert!(edge > 30 && edge < 230, "bord flouté : {edge}");
+        assert_eq!(out.get_pixel(78, 50).0, WHITE_PX, "intérieur net");
+    }
+
+    #[test]
+    fn text_style_options_change_the_ink() {
+        let text = |style: TextStyle| {
+            let mut a = ann(
+                Shape::Text {
+                    at: Pt::new(10.0, 10.0),
+                    text: "Hello".into(),
+                    size: 30.0,
+                    boxed: false,
+                },
+                RED,
+            );
+            a.text_style = style;
+            render(&white(160, 60), &[a])
+        };
+        let plain = text(TextStyle::default());
+        let bold = text(TextStyle {
+            bold: true,
+            ..TextStyle::default()
+        });
+        assert!(reds(&bold) > reds(&plain) * 11 / 10, "gras plus épais");
+        let underline = text(TextStyle {
+            underline: true,
+            ..TextStyle::default()
+        });
+        assert!(reds(&underline) > reds(&plain), "souligné");
+        let italic = text(TextStyle {
+            italic: true,
+            ..TextStyle::default()
+        });
+        assert_ne!(italic, plain, "italique penché");
+        let glow = text(TextStyle {
+            glow: Some(Glow {
+                color: Rgba::rgb(0, 0, 255),
+                size: 4.0,
+                blur: 2.0,
+            }),
+            ..TextStyle::default()
+        });
+        assert!(
+            glow.pixels().any(|p| p.0[2] > 200 && p.0[0] < 100),
+            "lueur bleue autour du texte"
+        );
+    }
+
+    #[test]
+    fn centered_lines_move_right() {
+        let draw = |align| {
+            let mut a = ann(
+                Shape::Text {
+                    at: Pt::new(5.0, 5.0),
+                    text: "MMMMMM\ni".into(),
+                    size: 20.0,
+                    boxed: false,
+                },
+                RED,
+            );
+            a.text_style.align = align;
+            render(&white(140, 60), &[a])
+        };
+        // Deuxième ligne (« i ») : x du premier pixel rouge.
+        let first_x = |img: &RgbaImage| {
+            (0..140)
+                .find(|&x| (30..52).any(|y| img.get_pixel(x, y).0 == RED_PX))
+                .unwrap_or(0)
+        };
+        let left = first_x(&draw(TextAlign::Left));
+        let center = first_x(&draw(TextAlign::Center));
+        let right = first_x(&draw(TextAlign::Right));
+        assert!(left < center && center < right, "{left} {center} {right}");
+    }
+
+    #[test]
+    fn bubbles_without_tail_draw_no_pointer() {
+        let bubble = |kind| {
+            let mut a = ann(
+                Shape::Bubble {
+                    at: Pt::new(20.0, 20.0),
+                    text: "Ok".into(),
+                    size: 30.0,
+                    tail: Pt::new(30.0, 140.0),
+                },
+                RED,
+            );
+            a.bubble = kind;
+            render(&white(140, 160), &[a])
+        };
+        assert_eq!(bubble(BubbleKind::Tail).get_pixel(30, 125).0, RED_PX);
+        assert_eq!(bubble(BubbleKind::NoTail).get_pixel(30, 125).0, WHITE_PX);
+        let simple = bubble(BubbleKind::Simple);
+        assert_eq!(simple.get_pixel(30, 125).0, WHITE_PX);
+        // Coins presque carrés : le coin haut gauche du cadre est rempli.
+        assert_eq!(simple.get_pixel(8, 13).0, RED_PX);
+        assert_eq!(bubble(BubbleKind::NoTail).get_pixel(8, 13).0, WHITE_PX);
+    }
+
+    #[test]
+    fn step_tails_and_formats() {
+        let step = |tail_kind, format| {
+            let mut a = ann(
+                Shape::Step {
+                    at: Pt::new(30.0, 30.0),
+                    number: 4,
+                    tail: Some(Pt::new(100.0, 30.0)),
+                },
+                RED,
+            );
+            a.step_tail = tail_kind;
+            a.step_format = format;
+            a.text_color = Some(Rgba::rgb(0, 0, 255));
+            render(&white(120, 90), &[a])
+        };
+        let line = step(StepTail::Line, StepFormat::Number);
+        assert_eq!(line.get_pixel(70, 30).0, RED_PX, "trait");
+        assert_eq!(line.get_pixel(70, 36).0, WHITE_PX, "pas une pointe pleine");
+        assert_eq!(line.get_pixel(100, 30).0, RED_PX, "point au bout");
+        let hidden = step(StepTail::Hidden, StepFormat::Number);
+        assert_eq!(hidden.get_pixel(70, 30).0, WHITE_PX);
+        let pin = step(StepTail::Pin, StepFormat::Number);
+        assert_eq!(
+            pin.get_pixel(70, 30).0,
+            WHITE_PX,
+            "l'épingle ignore la pointe"
+        );
+        assert_eq!(pin.get_pixel(30, 30 + 22).0, RED_PX, "pointe de l'épingle");
+        let roman = step(StepTail::Hidden, StepFormat::Roman);
+        assert_ne!(roman, hidden, "« iv » au lieu de « 4 »");
+        assert!(
+            hidden.pixels().any(|p| p.0 == [0, 0, 255, 255]),
+            "numéro de la couleur choisie"
+        );
+    }
+
+    #[test]
+    fn polygons_fill_close_and_end_with_arrows() {
+        let points = vec![
+            Pt::new(10.0, 10.0),
+            Pt::new(90.0, 10.0),
+            Pt::new(90.0, 70.0),
+        ];
+        let poly = |closed, fill, end| {
+            let mut a = ann(
+                Shape::Polygon {
+                    points: points.clone(),
+                    closed,
+                    start: EndShape::Plain,
+                    end,
+                },
+                RED,
+            );
+            a.fill = fill;
+            render(&white(100, 80), &[a])
+        };
+        let open = poly(false, false, EndShape::Plain);
+        assert_eq!(open.get_pixel(50, 10).0, RED_PX);
+        assert_eq!(open.get_pixel(50, 40).0, WHITE_PX, "pas de côté fermant");
+        let closed = poly(true, false, EndShape::Plain);
+        assert_eq!(closed.get_pixel(50, 40).0, RED_PX, "côté fermant");
+        let filled = poly(true, true, EndShape::Plain);
+        assert_eq!(filled.get_pixel(75, 25).0, RED_PX, "intérieur plein");
+        let arrow = poly(false, false, EndShape::Arrow);
+        assert!(reds(&arrow) > reds(&open), "pointe au bout");
+        assert_eq!(arrow.get_pixel(86, 60).0, RED_PX, "large pointe");
+        assert_ne!(open.get_pixel(86, 60).0, RED_PX);
+    }
+
+    #[test]
+    fn brackets_point_to_their_side() {
+        let draw = |side| {
+            render(
+                &white(100, 100),
+                &[ann(
+                    Shape::Bracket {
+                        a: Pt::new(20.0, 10.0),
+                        b: Pt::new(60.0, 90.0),
+                        side,
+                    },
+                    RED,
+                )],
+            )
+        };
+        let left = draw(BracketSide::Left);
+        assert_ne!(left.get_pixel(21, 50).0, WHITE_PX, "pointe à gauche");
+        assert_eq!(left.get_pixel(59, 50).0, WHITE_PX);
+        let right = draw(BracketSide::Right);
+        assert_ne!(right.get_pixel(59, 50).0, WHITE_PX, "pointe à droite");
+        let top = draw(BracketSide::Top);
+        assert_ne!(top.get_pixel(40, 11).0, WHITE_PX, "pointe en haut");
+    }
+
+    #[test]
+    fn inserted_images_come_from_the_assets_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("capture.png");
+        let assets = assets_dir(&capture);
+        assert_eq!(assets, dir.path().join("capture.assets"));
+        std::fs::create_dir_all(&assets).unwrap();
+        let blue = RgbaImage::from_pixel(10, 5, Px([0, 0, 255, 255]));
+        crate::history::write_png(&assets.join("logo.png"), &blue).unwrap();
+        let shape = Shape::Image {
+            a: Pt::new(10.0, 10.0),
+            b: Pt::new(50.0, 30.0),
+            file: "logo.png".into(),
+            ratio: 2.0,
+        };
+        let out = render_with(&white(60, 40), &[ann(shape.clone(), RED)], Some(&assets));
+        assert_eq!(out.get_pixel(30, 20).0, [0, 0, 255, 255]);
+        assert_eq!(out.get_pixel(5, 5).0, WHITE_PX);
+        // Sans le dossier : un cadre barré, jamais une erreur.
+        let missing = render(&white(60, 40), &[ann(shape, RED)]);
+        assert_ne!(missing.get_pixel(30, 20).0, [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn labels_and_mouse_stamps_are_drawn() {
+        let label = ann(
+            Shape::Label {
+                at: Pt::new(80.0, 30.0),
+                text: "BROUILLON".into(),
+                size: 20.0,
+            },
+            RED,
+        );
+        let out = render(&white(160, 60), &[label]);
+        assert!(reds(&out) > 300, "cadre et texte ({})", reds(&out));
+        let mouse = |button: &str| {
+            render(
+                &white(80, 80),
+                &[ann(
+                    Shape::Stamp {
+                        at: Pt::new(40.0, 40.0),
+                        icon: format!("{MOUSE_PREFIX}{button}"),
+                        size: 60.0,
+                    },
+                    RED,
+                )],
+            )
+        };
+        let left = mouse("gauche");
+        let right = mouse("droite");
+        assert_eq!(left.get_pixel(33, 22).0, RED_PX, "bouton gauche rempli");
+        assert_ne!(right.get_pixel(33, 22).0, RED_PX);
+        assert_eq!(right.get_pixel(47, 22).0, RED_PX, "bouton droit rempli");
+    }
+
+    #[test]
+    fn the_properties_banner_goes_above_the_image() {
+        let img = RgbaImage::from_pixel(200, 50, Px([0, 128, 0, 255]));
+        let doc = Doc {
+            annotations: Vec::new(),
+            title: "Titre".into(),
+            description: "Une description".into(),
+            show_properties: true,
+        };
+        let h = banner_height(&doc, 200);
+        assert!(h > 20, "{h}");
+        let out = render_doc(&img, &doc, None);
+        assert_eq!(out.dimensions(), (200, 50 + h));
+        assert_eq!(out.get_pixel(199, 1).0, WHITE_PX, "fond du bandeau");
+        assert!(
+            (0..h).any(|y| (0..200).any(|x| out.get_pixel(x, y).0[0] < 100)),
+            "titre écrit"
+        );
+        assert_eq!(
+            out.get_pixel(100, h + 10).0,
+            [0, 128, 0, 255],
+            "image dessous"
+        );
     }
 }

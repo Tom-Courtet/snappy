@@ -1,6 +1,7 @@
 //! Préférences de l'éditeur, gardées d'une ouverture à l'autre (`editor.json` à côté
 //! de `config.json`) : dernier outil, style courant et styles favoris.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,12 @@ pub struct Prefs {
     pub tool: Tool,
     pub style: Style,
     pub presets: Vec<Preset>,
+    // --- Lot « Éditeur : annotations »
+    /// Préréglages numérotés de chaque outil (en plus des favoris ★).
+    pub tool_presets: BTreeMap<Tool, Vec<Style>>,
+    /// « Valider » copie aussi le chemin : l'image est exportée et placée dans le
+    /// presse-papiers comme fichier.
+    pub validate_with_path: bool,
 }
 
 impl Default for Prefs {
@@ -32,6 +39,48 @@ impl Default for Prefs {
             tool: Tool::Arrow,
             style: Style::default(),
             presets: Vec::new(),
+            tool_presets: BTreeMap::new(),
+            validate_with_path: false,
+        }
+    }
+}
+
+/// Nombre maximal de préréglages par outil.
+pub const MAX_TOOL_PRESETS: usize = 12;
+
+/// Préréglages numérotés d'un outil : ajout, écrasement, suppression.
+pub trait ToolPresets {
+    /// Ajoute `style` en dernier (le plus ancien part au-delà du maximum) ; rend son
+    /// numéro (à partir de 0).
+    fn add(&mut self, tool: Tool, style: Style) -> usize;
+    fn overwrite(&mut self, tool: Tool, index: usize, style: Style);
+    fn delete(&mut self, tool: Tool, index: usize);
+}
+
+impl ToolPresets for BTreeMap<Tool, Vec<Style>> {
+    fn add(&mut self, tool: Tool, style: Style) -> usize {
+        let list = self.entry(tool).or_default();
+        list.push(style);
+        if list.len() > MAX_TOOL_PRESETS {
+            list.remove(0);
+        }
+        list.len() - 1
+    }
+
+    fn overwrite(&mut self, tool: Tool, index: usize, style: Style) {
+        if let Some(slot) = self.get_mut(&tool).and_then(|l| l.get_mut(index)) {
+            *slot = style;
+        }
+    }
+
+    fn delete(&mut self, tool: Tool, index: usize) {
+        if let Some(list) = self.get_mut(&tool) {
+            if index < list.len() {
+                list.remove(index);
+            }
+            if list.is_empty() {
+                self.remove(&tool);
+            }
         }
     }
 }
@@ -111,5 +160,50 @@ mod tests {
         }
         assert_eq!(prefs.presets.len(), MAX_PRESETS);
         assert_eq!(prefs.presets[0], preset(4), "les plus anciens partent");
+    }
+
+    #[test]
+    fn older_editor_json_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("editor.json");
+        std::fs::write(
+            &path,
+            r#"{"tool":"rect","style":{"color":[255,0,0,255],"size":"L","fill":true},"presets":[]}"#,
+        )
+        .unwrap();
+        let prefs = Prefs::load(&path);
+        assert_eq!(prefs.tool, Tool::Rect);
+        assert!(prefs.style.fill);
+        assert_eq!(
+            prefs.style.opacity, 1.0,
+            "nouvelle option : valeur d'origine"
+        );
+        assert!(prefs.tool_presets.is_empty());
+    }
+
+    #[test]
+    fn tool_presets_add_overwrite_delete_and_persist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("editor.json");
+        let mut prefs = Prefs::default();
+        let red = Style::default();
+        let green = Style {
+            color: PALETTE[3].0,
+            ..Style::default()
+        };
+        assert_eq!(prefs.tool_presets.add(Tool::Step, red.clone()), 0);
+        assert_eq!(prefs.tool_presets.add(Tool::Step, red.clone()), 1);
+        prefs.tool_presets.overwrite(Tool::Step, 1, green.clone());
+        prefs.save(&path);
+        let loaded = Prefs::load(&path);
+        assert_eq!(loaded.tool_presets[&Tool::Step], vec![red, green]);
+        let mut presets = loaded.tool_presets;
+        presets.delete(Tool::Step, 0);
+        presets.delete(Tool::Step, 0);
+        assert!(presets.is_empty());
+        for _ in 0..20 {
+            presets.add(Tool::Arrow, Style::default());
+        }
+        assert_eq!(presets[&Tool::Arrow].len(), MAX_TOOL_PRESETS);
     }
 }

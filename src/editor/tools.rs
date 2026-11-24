@@ -4,10 +4,13 @@
 use egui::Key;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Annotation, ArrowStyle, PALETTE, Pt, Rgba, Shape};
+use crate::model::{
+    Annotation, ArrowStyle, BracketSide, BubbleKind, EndShape, LineStyle, PALETTE, Pt, Rgba, Shape,
+    StepFormat, StepTail, TextStyle,
+};
 use crate::ui::icons;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tool {
     Select,
@@ -25,10 +28,15 @@ pub enum Tool {
     Step,
     Magnifier,
     Stamp,
+    // --- Lot « Éditeur : annotations »
+    /// Polygone / ligne brisée, clic après clic.
+    Polygon,
+    /// Accolade.
+    Bracket,
 }
 
 /// Outils : icône, nom, touche.
-pub const TOOLS: [(Tool, &str, &str, Key); 15] = [
+pub const TOOLS: [(Tool, &str, &str, Key); 17] = [
     (Tool::Select, icons::SELECT, "Sélection", Key::V),
     (Tool::Arrow, icons::ARROW, "Flèche", Key::A),
     (Tool::Line, icons::LINE, "Ligne", Key::L),
@@ -54,6 +62,14 @@ pub const TOOLS: [(Tool, &str, &str, Key); 15] = [
     ),
     (Tool::Magnifier, icons::MAGNIFIER, "Loupe", Key::M),
     (Tool::Stamp, icons::STAMP, "Tampon", Key::K),
+    // --- Lot « Éditeur : annotations » (G et J étaient libres).
+    (
+        Tool::Polygon,
+        icons::CURVE,
+        "Polygone (clics ; double-clic ou Entrée : finir ; clic sur le 1er point : fermer)",
+        Key::G,
+    ),
+    (Tool::Bracket, "{}", "Accolade", Key::J),
 ];
 
 /// Tampons proposés : glyphe Lucide et nom.
@@ -130,6 +146,26 @@ pub struct Style {
     pub zoom: f32,
     /// Glyphe du tampon.
     pub stamp: String,
+    // --- Lot « Éditeur : annotations » : options en plus (valeurs par défaut = rendu
+    // d'origine).
+    /// Opacité, de 0,1 à 1.
+    pub opacity: f32,
+    pub dash: LineStyle,
+    /// Rectangle et ellipse : assombrir l'extérieur.
+    pub dim_outside: bool,
+    /// Rectangle et ellipse : flouter l'extérieur.
+    pub blur_outside: bool,
+    pub text_style: TextStyle,
+    pub bubble: BubbleKind,
+    pub step_format: StepFormat,
+    pub step_tail: StepTail,
+    /// Couleur du numéro des pastilles (`None` : automatique).
+    pub step_text: Option<Rgba>,
+    /// Polygone fermé.
+    pub poly_closed: bool,
+    pub poly_start: EndShape,
+    pub poly_end: EndShape,
+    pub bracket: BracketSide,
 }
 
 impl Default for Style {
@@ -144,6 +180,19 @@ impl Default for Style {
             shadow: false,
             zoom: 2.0,
             stamp: STAMPS[0].0.to_owned(),
+            opacity: 1.0,
+            dash: LineStyle::Solid,
+            dim_outside: false,
+            blur_outside: false,
+            text_style: TextStyle::default(),
+            bubble: BubbleKind::Tail,
+            step_format: StepFormat::Number,
+            step_tail: StepTail::Pointer,
+            step_text: None,
+            poly_closed: false,
+            poly_start: EndShape::Plain,
+            poly_end: EndShape::Plain,
+            bracket: BracketSide::Left,
         }
     }
 }
@@ -177,9 +226,40 @@ impl Style {
     /// Nouvelle annotation de cette forme, à ce style.
     pub fn annotate(&self, shape: Shape, m: Metrics) -> Annotation {
         let mut ann = Annotation::new(shape, self.color, m.stroke);
-        ann.fill = self.fill && matches!(ann.shape, Shape::Rect { .. } | Shape::Ellipse { .. });
+        ann.fill = self.fill
+            && matches!(
+                ann.shape,
+                Shape::Rect { .. } | Shape::Ellipse { .. } | Shape::Polygon { .. }
+            );
         ann.shadow = self.shadow && ann.can_have_shadow();
+        self.apply_options(&mut ann);
         ann
+    }
+
+    /// Options du lot « annotations » qui ont un sens pour la forme de `ann`.
+    pub fn apply_options(&self, ann: &mut Annotation) {
+        ann.opacity = self.opacity.clamp(0.1, 1.0);
+        ann.dash = if is_stroked(&ann.shape) {
+            self.dash
+        } else {
+            LineStyle::Solid
+        };
+        let closed = matches!(ann.shape, Shape::Rect { .. } | Shape::Ellipse { .. });
+        ann.dim_outside = closed && self.dim_outside;
+        ann.blur_outside = closed && self.blur_outside;
+        match ann.shape {
+            Shape::Text { .. } => ann.text_style = self.text_style,
+            Shape::Bubble { .. } => {
+                ann.text_style = self.text_style;
+                ann.bubble = self.bubble;
+            }
+            Shape::Step { .. } => {
+                ann.step_format = self.step_format;
+                ann.step_tail = self.step_tail;
+                ann.text_color = self.step_text;
+            }
+            _ => {}
+        }
     }
 
     /// Applique ce style à une annotation existante (ce qui a un sens pour sa forme).
@@ -202,11 +282,25 @@ impl Style {
             Shape::Bubble { size, .. } => *size = m.text,
             Shape::Magnifier { zoom, .. } => *zoom = self.zoom,
             Shape::Stamp { icon, size, .. } => {
-                icon.clone_from(&self.stamp);
+                // Un tampon texte ou image choisi ne change pas une icône posée.
+                if is_glyph_stamp(&self.stamp) {
+                    icon.clone_from(&self.stamp);
+                }
                 *size = m.stamp;
             }
+            Shape::Polygon {
+                closed, start, end, ..
+            } => {
+                *closed = self.poly_closed;
+                *start = self.poly_start;
+                *end = self.poly_end;
+                ann.fill = self.fill;
+            }
+            Shape::Bracket { side, .. } => *side = self.bracket,
+            Shape::Label { size, .. } => *size = label_size(m),
             _ => {}
         }
+        self.apply_options(ann);
     }
 
     /// Reprend les options d'une annotation qu'on vient de sélectionner : les
@@ -221,13 +315,106 @@ impl Style {
                 self.fill = ann.fill;
             }
             Shape::Ellipse { .. } => self.fill = ann.fill,
-            Shape::Text { boxed, .. } => self.boxed = *boxed,
+            Shape::Text { boxed, .. } => {
+                self.boxed = *boxed;
+                self.text_style = ann.text_style;
+            }
             Shape::Magnifier { zoom, .. } => self.zoom = *zoom,
             Shape::Stamp { icon, .. } => self.stamp.clone_from(icon),
+            Shape::Polygon {
+                closed, start, end, ..
+            } => {
+                self.poly_closed = *closed;
+                self.poly_start = *start;
+                self.poly_end = *end;
+                self.fill = ann.fill;
+            }
+            Shape::Bracket { side, .. } => self.bracket = *side,
+            Shape::Label { text, .. } => self.stamp = format!("{LABEL_PREFIX}{text}"),
+            Shape::Bubble { .. } => {
+                self.text_style = ann.text_style;
+                self.bubble = ann.bubble;
+            }
+            Shape::Step { .. } => {
+                self.step_format = ann.step_format;
+                self.step_tail = ann.step_tail;
+                self.step_text = ann.text_color;
+            }
             _ => {}
+        }
+        self.opacity = ann.opacity;
+        if is_stroked(&ann.shape) {
+            self.dash = ann.dash;
+        }
+        if matches!(ann.shape, Shape::Rect { .. } | Shape::Ellipse { .. }) {
+            self.dim_outside = ann.dim_outside;
+            self.blur_outside = ann.blur_outside;
         }
     }
 }
+
+// --- Lot « Éditeur : annotations » : tampons par catégorie --------------------------
+
+/// Préfixe d'un tampon texte dans [`Style::stamp`] (`texte:BROUILLON`).
+pub const LABEL_PREFIX: &str = "texte:";
+/// Préfixe d'un tampon personnel (`fichier:logo.png`, dans `<données>/stamps/`).
+pub const FILE_PREFIX: &str = "fichier:";
+
+/// La forme a-t-elle un trait (qui peut être pointillé) ?
+pub fn is_stroked(shape: &Shape) -> bool {
+    matches!(
+        shape,
+        Shape::Arrow { .. }
+            | Shape::Line { .. }
+            | Shape::Rect { .. }
+            | Shape::Ellipse { .. }
+            | Shape::Pen { .. }
+            | Shape::Polygon { .. }
+            | Shape::Bracket { .. }
+    )
+}
+
+/// Le tampon est-il une icône (glyphe Lucide ou souris en vecteurs) ?
+pub fn is_glyph_stamp(stamp: &str) -> bool {
+    !stamp.starts_with(LABEL_PREFIX) && !stamp.starts_with(FILE_PREFIX)
+}
+
+/// Taille d'un tampon texte.
+pub fn label_size(m: Metrics) -> f32 {
+    m.text * 1.3
+}
+
+/// Tampons « souris » : pointeurs, clics et boutons.
+pub const MOUSE_STAMPS: [(&str, &str); 10] = [
+    (icons::SELECT, "Pointeur"),
+    (icons::STAMP_CLICK, "Clic"),
+    ("souris:gauche", "Bouton gauche"),
+    ("souris:droite", "Bouton droit"),
+    ("souris:molette", "Molette"),
+    ("texte:Cliquer ici", "Cliquer ici"),
+    ("texte:Double-clic", "Double-clic"),
+    ("texte:Clic gauche", "Clic gauche"),
+    ("texte:Clic droit", "Clic droit"),
+    ("texte:Glisser-déposer", "Glisser-déposer"),
+];
+
+/// Tampons texte, encadrés comme un tampon encreur.
+pub const TEXT_STAMPS: [&str; 14] = [
+    "APPROUVÉ",
+    "VALIDÉ",
+    "REFUSÉ",
+    "BROUILLON",
+    "CONFIDENTIEL",
+    "URGENT",
+    "À FAIRE",
+    "AVANT",
+    "APRÈS",
+    "VRAI",
+    "FAUX",
+    "APPROVED",
+    "DRAFT",
+    "CONFIDENTIAL",
+];
 
 /// Outil correspondant à une annotation (pour savoir quelles options afficher).
 pub fn tool_of(shape: &Shape) -> Tool {
@@ -245,7 +432,9 @@ pub fn tool_of(shape: &Shape) -> Tool {
         Shape::Bubble { .. } => Tool::Bubble,
         Shape::Step { .. } => Tool::Step,
         Shape::Magnifier { .. } => Tool::Magnifier,
-        Shape::Stamp { .. } => Tool::Stamp,
+        Shape::Stamp { .. } | Shape::Image { .. } | Shape::Label { .. } => Tool::Stamp,
+        Shape::Polygon { .. } => Tool::Polygon,
+        Shape::Bracket { .. } => Tool::Bracket,
     }
 }
 
@@ -282,7 +471,12 @@ pub fn new_shape(tool: Tool, p: Pt, style: &Style, m: Metrics, next_step: u32) -
             at: p,
             zoom: style.zoom,
         },
-        Tool::Select | Tool::Text | Tool::Bubble | Tool::Stamp => return None,
+        Tool::Bracket => Shape::Bracket {
+            a: p,
+            b: p,
+            side: style.bracket,
+        },
+        Tool::Select | Tool::Text | Tool::Bubble | Tool::Stamp | Tool::Polygon => return None,
     })
 }
 
@@ -318,7 +512,13 @@ pub fn extend_shape(shape: &mut Shape, p: Pt, shift: bool) {
             let d = *radius * (*zoom + 1.0) * 0.85;
             *at = source.offset(d, -d);
         }
-        Shape::Text { .. } | Shape::Bubble { .. } | Shape::Stamp { .. } => {}
+        Shape::Bracket { b, .. } => *b = p,
+        Shape::Text { .. }
+        | Shape::Bubble { .. }
+        | Shape::Stamp { .. }
+        | Shape::Polygon { .. }
+        | Shape::Image { .. }
+        | Shape::Label { .. } => {}
     }
 }
 
