@@ -350,6 +350,7 @@ mod tests {
                 PALETTE[0].0,
                 4.0,
             )],
+            ..Doc::default()
         };
         history::save_doc(&annotated, &doc).unwrap();
         let out = prepare(&[plain.clone(), annotated.clone()]).unwrap();

@@ -241,6 +241,7 @@ mod tests {
                         &path,
                         &Doc {
                             annotations: vec![step(2), step(1)],
+                            ..Doc::default()
                         },
                     )
                     .unwrap();
