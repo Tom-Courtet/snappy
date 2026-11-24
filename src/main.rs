@@ -16,6 +16,7 @@
 
 mod agent;
 mod capture;
+mod capture_modes;
 mod config;
 mod editor;
 mod history;
@@ -24,8 +25,12 @@ mod model;
 mod overlay;
 mod platform;
 mod render;
+mod scroll;
 mod settings;
 mod ui;
+mod video;
+mod vision;
+mod workspace;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -80,7 +85,7 @@ fn main() -> Result<()> {
         Some("--capture") => {
             let arg = args.next().unwrap_or_default();
             let mode = Mode::from_arg(&arg)
-                .with_context(|| format!("--capture attend region ou screen, pas « {arg} »"))?;
+                .with_context(|| format!("--capture : action inconnue « {arg} »"))?;
             run_capture(store, mode)
         }
         Some("--edit") => {
@@ -128,6 +133,9 @@ fn trigger(store: Store, mode: Mode, delay: u32) -> Result<()> {
 
 /// Une capture, de l'écran figé jusqu'à l'action choisie.
 fn run_capture(store: Store, mode: Mode) -> Result<()> {
+    if mode == Mode::Workspace {
+        return workspace::run(store);
+    }
     if !capture::has_permission() {
         capture::request_permission();
         bail!(
@@ -138,7 +146,15 @@ fn run_capture(store: Store, mode: Mode) -> Result<()> {
     let config = store.load();
     let capture = capture::capture_all()?;
     match mode {
-        Mode::Region => region(store, capture, config.capture_cursor),
+        // Le délai de la capture différée est compté par l'agent.
+        Mode::Region | Mode::Delayed => region(store, capture, config.capture_cursor),
+        Mode::AllScreens | Mode::Window | Mode::ColorPicker => {
+            capture_modes::run(store, mode, capture)
+        }
+        Mode::Scrolling => scroll::run(store, capture),
+        Mode::Ocr | Mode::Qr => vision::run(store, mode, capture),
+        Mode::Video | Mode::VideoRegion => video::run(store, mode, capture),
+        Mode::Workspace => workspace::run(store),
         Mode::Previous => match previous_region(&store, &capture, config.capture_cursor) {
             Some(img) => {
                 history::save_capture(&store.captures_dir(), &img)?;

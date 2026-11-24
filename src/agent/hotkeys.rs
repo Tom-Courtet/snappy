@@ -19,8 +19,8 @@ use super::layout;
 use crate::config::Config;
 use crate::ipc::{Mode, Refused};
 
-/// Les captures qui ont un raccourci, dans l'ordre du menu.
-pub const MODES: [Mode; 3] = [Mode::Region, Mode::Screen, Mode::Previous];
+/// Les actions qui peuvent avoir un raccourci, dans l'ordre des réglages.
+pub const MODES: [Mode; 13] = Mode::ALL;
 
 /// Action d'un appui sur un raccourci.
 type OnCapture = Arc<dyn Fn(Mode) + Send + Sync>;

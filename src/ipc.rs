@@ -24,8 +24,9 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 /// se ferme brutalement, les raccourcis reviennent quand même.
 pub const SUSPEND_LEASE: Duration = Duration::from_secs(15);
 
-/// Type de capture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Action globale : type de capture, ou fenêtre à ouvrir. Chacune peut avoir un
+/// raccourci global (voir [`crate::config::Config::hotkey`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     /// Sélection d'une zone sur l'écran figé.
@@ -34,25 +35,67 @@ pub enum Mode {
     Screen,
     /// Même zone que la capture précédente, sans sélection.
     Previous,
+    /// Tous les écrans, assemblés en une seule image.
+    AllScreens,
+    /// Fenêtre au premier plan.
+    Window,
+    /// Sélection d'une zone après le délai de la config (capture différée).
+    Delayed,
+    /// Capture avec défilement.
+    Scrolling,
+    /// Copier le texte d'une zone (OCR).
+    Ocr,
+    /// Décoder un QR code ou un code-barres dans une zone.
+    Qr,
+    /// Pipette de couleur.
+    ColorPicker,
+    /// Vidéo de la zone précédente (ou d'une nouvelle s'il n'y en a pas).
+    Video,
+    /// Vidéo d'une nouvelle zone.
+    VideoRegion,
+    /// Fenêtre « Espace de travail ».
+    Workspace,
 }
 
 impl Mode {
+    /// Toutes les actions, dans l'ordre des réglages et du menu.
+    pub const ALL: [Mode; 13] = [
+        Self::Region,
+        Self::Previous,
+        Self::Screen,
+        Self::AllScreens,
+        Self::Window,
+        Self::Delayed,
+        Self::Scrolling,
+        Self::Ocr,
+        Self::Qr,
+        Self::ColorPicker,
+        Self::Video,
+        Self::VideoRegion,
+        Self::Workspace,
+    ];
+
     /// Argument de `snappy --capture`.
     pub fn arg(self) -> &'static str {
         match self {
             Self::Region => "region",
             Self::Screen => "screen",
             Self::Previous => "previous",
+            Self::AllScreens => "all-screens",
+            Self::Window => "window",
+            Self::Delayed => "delayed",
+            Self::Scrolling => "scrolling",
+            Self::Ocr => "ocr",
+            Self::Qr => "qr",
+            Self::ColorPicker => "color-picker",
+            Self::Video => "video",
+            Self::VideoRegion => "video-region",
+            Self::Workspace => "workspace",
         }
     }
 
     pub fn from_arg(arg: &str) -> Option<Self> {
-        match arg {
-            "region" => Some(Self::Region),
-            "screen" => Some(Self::Screen),
-            "previous" => Some(Self::Previous),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|m| m.arg() == arg)
     }
 }
 
@@ -279,7 +322,9 @@ mod tests {
                 delay: 0
             }
         );
-        assert_eq!(Mode::from_arg(Mode::Screen.arg()), Some(Mode::Screen));
+        for mode in Mode::ALL {
+            assert_eq!(Mode::from_arg(mode.arg()), Some(mode));
+        }
     }
 
     #[test]

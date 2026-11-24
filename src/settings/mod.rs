@@ -234,6 +234,7 @@ impl Settings {
                 Mode::Region => icons::REGION,
                 Mode::Screen => icons::SCREEN,
                 Mode::Previous => icons::CROP,
+                _ => icons::REGION,
             };
             ui.label(
                 RichText::new(icon)

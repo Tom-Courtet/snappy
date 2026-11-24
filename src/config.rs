@@ -8,6 +8,7 @@
 //! La fenêtre des réglages (`snappy --settings`) l'écrit ; l'agent la relit quand
 //! elle le lui demande.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -44,6 +45,9 @@ pub struct Config {
     /// Dossier où « Enregistrer » exporte les images annotées. Vide : le dossier
     /// Images de l'utilisateur, sous-dossier `Snappy`.
     pub save_dir: Option<PathBuf>,
+    /// Raccourcis des autres actions (OCR, vidéo, espace de travail…). Absent ou
+    /// vide : aucun raccourci.
+    pub extra_hotkeys: BTreeMap<Mode, String>,
 }
 
 impl Default for Config {
@@ -60,6 +64,7 @@ impl Default for Config {
             capture_cursor: false,
             delay_seconds: 3,
             save_dir: None,
+            extra_hotkeys: BTreeMap::new(),
         }
     }
 }
@@ -74,6 +79,7 @@ impl Config {
             Mode::Region => &self.region_hotkey,
             Mode::Screen => &self.screen_hotkey,
             Mode::Previous => &self.previous_hotkey,
+            other => self.extra_hotkeys.get(&other).map_or("", String::as_str),
         }
     }
 
@@ -82,6 +88,7 @@ impl Config {
             Mode::Region => &mut self.region_hotkey,
             Mode::Screen => &mut self.screen_hotkey,
             Mode::Previous => &mut self.previous_hotkey,
+            other => self.extra_hotkeys.entry(other).or_default(),
         }
     }
 }
@@ -99,6 +106,8 @@ impl DefaultHotkeys {
             Mode::Region => self.region,
             Mode::Screen => self.screen,
             Mode::Previous => self.previous,
+            // Les nouvelles actions n'ont pas de raccourci par défaut.
+            _ => "",
         }
     }
 }

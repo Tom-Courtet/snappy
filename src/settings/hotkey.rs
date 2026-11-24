@@ -261,6 +261,16 @@ pub fn mode_name(mode: Mode) -> &'static str {
         Mode::Region => "Capturer une zone",
         Mode::Screen => "Capturer l'écran",
         Mode::Previous => "Capturer la zone précédente",
+        Mode::AllScreens => "Capturer tous les écrans",
+        Mode::Window => "Capturer la fenêtre active",
+        Mode::Delayed => "Capture différée",
+        Mode::Scrolling => "Capture avec défilement",
+        Mode::Ocr => "Copier le texte (OCR)",
+        Mode::Qr => "Décoder un QR code",
+        Mode::ColorPicker => "Pipette de couleur",
+        Mode::Video => "Enregistrer une vidéo",
+        Mode::VideoRegion => "Enregistrer une zone en vidéo",
+        Mode::Workspace => "Espace de travail",
     }
 }
 

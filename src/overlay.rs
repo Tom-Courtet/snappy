@@ -1179,3 +1179,49 @@ mod tests {
         assert_eq!(window_label("Finder", " "), "Finder");
     }
 }
+
+/// Pourquoi on sélectionne une zone sans passer par les actions habituelles
+/// (copier, enregistrer, éditer) : la zone part directement à une autre fonction.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    Ocr,
+    Qr,
+    Video,
+    Scrolling,
+}
+
+/// Zone choisie avec [`pick`].
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct Picked {
+    /// Pixels de la zone (curseur compris si demandé).
+    pub image: RgbaImage,
+    /// Écran de la zone (indice dans `Capture::shots`) et ses caractéristiques.
+    pub screen: usize,
+    pub display_id: u32,
+    pub frame: crate::capture::Frame,
+    pub scale: f64,
+    /// Zone en pixels de l'image de l'écran.
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    /// Fenêtre sous la zone, si elle a été choisie d'un clic : application et titre.
+    pub app: Option<String>,
+    pub title: Option<String>,
+}
+
+/// Sélection d'une zone sur les écrans figés, rendue dès que l'utilisateur relâche
+/// la souris (ou clique une fenêtre). `None` : annulé (Échap).
+///
+/// Socle : à compléter par le lot « Capture ».
+#[allow(dead_code)]
+pub fn pick(
+    _store: Store,
+    _capture: Capture,
+    _with_cursor: bool,
+    purpose: Purpose,
+) -> Result<Option<Picked>> {
+    anyhow::bail!("sélection pour {purpose:?} pas encore disponible")
+}

@@ -171,6 +171,12 @@ impl Launcher {
     /// Démarre une capture, tout de suite ou après `delay` secondes (compte à
     /// rebours dans la barre des menus), sauf si une autre est déjà en cours.
     pub fn capture(self: &Arc<Self>, mode: Mode, delay: u32) -> Result<()> {
+        // Capture différée (raccourci) : une zone, après le délai de la config.
+        let (mode, delay) = match mode {
+            Mode::Delayed if delay == 0 => (Mode::Region, self.delay_seconds()),
+            Mode::Delayed => (Mode::Region, delay),
+            other => (other, delay),
+        };
         if delay == 0 {
             return self.start(mode);
         }
@@ -194,6 +200,14 @@ impl Launcher {
             })
             .context("fil de la capture différée")?;
         Ok(())
+    }
+
+    /// Délai de la capture différée, lu dans la config.
+    fn delay_seconds(&self) -> u32 {
+        match Store::open_default() {
+            Ok(store) => store.load().delay_seconds.max(1),
+            Err(_) => Config::default().delay_seconds,
+        }
     }
 
     /// Lance le processus de capture, sauf si une autre est encore à l'écran.
