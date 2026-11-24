@@ -23,6 +23,7 @@
 mod bars;
 mod extras;
 mod image_tab;
+mod links;
 mod prefs;
 mod preview;
 mod tools;

@@ -515,7 +515,7 @@ impl Editor {
 
     /// Ajoute une retouche : nouvelle image de travail, annotations (et historique
     /// d'annulation) déplacées avec elle.
-    fn push_edit(&mut self, edit: ImageEdit) {
+    pub(super) fn push_edit(&mut self, edit: ImageEdit) {
         self.commit_text();
         self.image.mode = Mode::None;
         let src = self.base.dimensions();

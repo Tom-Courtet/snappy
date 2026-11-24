@@ -69,6 +69,11 @@ pub(super) enum Action {
     MoveTo(Vec<PathBuf>, PathBuf),
     Merge(Vec<PathBuf>, bool),
     Properties(PathBuf),
+    /// Publier : feuille de partage, courriel, impression, document.
+    Share(Vec<PathBuf>),
+    Mail(Vec<PathBuf>),
+    Print(PathBuf),
+    Document(Vec<PathBuf>),
     Capture(Mode),
     Edit,
     Settings,
@@ -645,8 +650,37 @@ impl Workspace {
             {
                 actions.push(Action::Edit);
             }
-            round_button(ui, Some(icons::OPEN), "Publier", BLUE, false)
-                .on_hover_text("Bientôt : publication (PDF, courriel, partage)");
+            let chosen = self.selected();
+            let publish = round_button(ui, Some(icons::OPEN), "Publier", BLUE, !chosen.is_empty())
+                .on_hover_text("Partager, envoyer, imprimer ou faire un document")
+                .on_disabled_hover_text("Sélectionnez une ou plusieurs captures");
+            Popup::menu(&publish).show(|ui| {
+                ui.set_min_width(260.0);
+                if menu_item(ui, "Partager…", "", true) {
+                    actions.push(Action::Share(chosen.clone()));
+                }
+                if menu_item(ui, "Envoyer par courriel…", "", true) {
+                    actions.push(Action::Mail(chosen.clone()));
+                }
+                let one_image =
+                    chosen.len() == 1 && files::kind_of(&chosen[0]) == Some(Kind::Image);
+                if menu_item(ui, "Imprimer…", "", one_image) {
+                    actions.push(Action::Print(chosen[0].clone()));
+                }
+                let images: Vec<PathBuf> = chosen
+                    .iter()
+                    .filter(|p| files::kind_of(p) == Some(Kind::Image))
+                    .cloned()
+                    .collect();
+                if menu_item(
+                    ui,
+                    "Nouveau document (PDF, HTML, GIF)…",
+                    "",
+                    !images.is_empty(),
+                ) {
+                    actions.push(Action::Document(images));
+                }
+            });
             if round_button(ui, Some(icons::CLOSE), "Fermer", ORANGE, true).clicked() {
                 actions.push(Action::Close);
             }
@@ -1436,6 +1470,36 @@ impl Workspace {
             }
             Action::MoveTo(paths, dir) => self.move_to(&paths, &dir),
             Action::Merge(paths, horizontal) => self.merge(&paths, horizontal),
+            Action::Share(paths) => match crate::share::share_sheet(&paths) {
+                Ok(delivery) => {
+                    if let Some(text) = delivery.message() {
+                        self.say(text);
+                    }
+                }
+                Err(e) => self.say(format!("Partage impossible : {e:#}")),
+            },
+            Action::Mail(paths) => match crate::share::email(&paths) {
+                Ok(delivery) => {
+                    if let Some(text) = delivery.message() {
+                        self.say(text);
+                    }
+                }
+                Err(e) => self.say(format!("Courriel impossible : {e:#}")),
+            },
+            Action::Print(path) => {
+                let options = crate::share::PrintOptions {
+                    file_name: true,
+                    ..Default::default()
+                };
+                if let Err(e) = crate::share::print(&path, options) {
+                    self.say(format!("Impression impossible : {e:#}"));
+                }
+            }
+            Action::Document(paths) => {
+                if let Err(e) = crate::share::docgen::window::open(&paths) {
+                    self.say(format!("Générateur de documents : {e:#}"));
+                }
+            }
             Action::Properties(path) => self.dialog = Some(Dialog::Properties { path }),
             Action::Capture(mode) => self.close(Some(After::Capture(mode))),
             Action::Edit => {

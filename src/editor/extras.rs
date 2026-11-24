@@ -1227,6 +1227,7 @@ impl Editor {
             ui.close();
             toggle_fullscreen(ctx);
         }
+        self.links_menu(ui);
         ui.separator();
         if ui
             .button(

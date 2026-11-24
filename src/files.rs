@@ -125,10 +125,16 @@ pub fn workspaces(root: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.is_dir() && !hidden(p))
+        .filter(|p| p.is_dir() && !hidden(p) && !is_assets_dir(p))
         .collect();
     dirs.sort_by_key(|p| file_name(p).to_lowercase());
     dirs
+}
+
+/// Dossier des images insérées d'une capture (`<capture>.assets`, voir
+/// `render::assets_dir`) : il appartient à la capture, ce n'est pas un espace.
+fn is_assets_dir(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "assets")
 }
 
 /// Un dossier est-il vide (fichiers cachés comme les vignettes mis à part) ?
@@ -278,6 +284,11 @@ fn carry_companions(old: &Path, new: &Path) -> Result<()> {
     if kind_of(old) == Some(Kind::Image) && doc.exists() {
         move_file(&doc, &history::doc_path(new))?;
     }
+    let assets = crate::render::assets_dir(old);
+    if assets.is_dir() {
+        fs::rename(&assets, crate::render::assets_dir(new))
+            .with_context(|| format!("déplacement de {}", assets.display()))?;
+    }
     let thumbs = thumbs_of(old);
     if !thumbs.is_empty() {
         let _ = fs::create_dir_all(thumbs_dir(new));
@@ -353,6 +364,10 @@ pub fn trash_media(path: &Path) -> Result<()> {
     let doc = history::doc_path(path);
     if kind_of(path) == Some(Kind::Image) && doc.exists() {
         items.push(doc);
+    }
+    let assets = crate::render::assets_dir(path);
+    if assets.is_dir() {
+        items.push(assets);
     }
     trash(&items)?;
     for thumb in thumbs_of(path) {
