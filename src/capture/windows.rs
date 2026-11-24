@@ -618,6 +618,51 @@ fn describe_window(hwnd: HWND, own_pid: u32, apps: &mut HashMap<u32, String>) ->
     })
 }
 
+// --- Fenêtre au premier plan (lot « Capture ») --------------------------------
+
+/// Même exécutable que Snappy (l'agent qui a lancé cette capture, les réglages…),
+/// chemins comparés sans tenir compte de la casse.
+fn same_exe(path: &str, ours: &str) -> bool {
+    !path.is_empty() && path.eq_ignore_ascii_case(ours)
+}
+
+/// Fenêtre au premier plan (`GetForegroundWindow`), en pixels physiques du bureau
+/// virtuel, bornes visibles DWM. `None` si c'est le bureau, une fenêtre de Snappy,
+/// ou une fenêtre qu'un clic ne viserait pas (voir [`keep_window`]).
+pub fn front_window() -> Option<super::FrontWindow> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, GetForegroundWindow};
+    let _px = PhysicalPixels::enter();
+    // SAFETY : appels sans pointeur ; une poignée nulle est vérifiée.
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return None;
+    }
+    // SAFETY : idem.
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let hwnd = if root.is_null() { hwnd } else { root };
+    let pid = window_pid(hwnd);
+    let ours = std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if exe_path(pid).is_some_and(|p| same_exe(&p, &ours)) {
+        return None;
+    }
+    // SAFETY : appel sans pointeur.
+    let own_pid = unsafe { GetCurrentProcessId() };
+    let found = describe_window(hwnd, own_pid, &mut HashMap::new())?;
+    let b = found.bounds;
+    Some(super::FrontWindow {
+        bounds: Frame {
+            x: f64::from(b.left),
+            y: f64::from(b.top),
+            width: f64::from(b.width()),
+            height: f64::from(b.height()),
+        },
+        title: found.title,
+        app: found.app,
+    })
+}
+
 /// Curseur affiché au moment de la capture, en pixels physiques.
 struct Pointer {
     /// Position du point chaud.
@@ -1038,6 +1083,14 @@ mod tests {
             active_index(&[screen(PxRect::new(0, 0, 10, 10), false)], None),
             0
         );
+    }
+
+    #[test]
+    fn our_own_executable_is_recognised() {
+        let ours = r"C:\Program Files\Snappy\snappy.exe";
+        assert!(same_exe(r"c:\program files\snappy\SNAPPY.EXE", ours));
+        assert!(!same_exe(r"C:\Windows\notepad.exe", ours));
+        assert!(!same_exe("", ""));
     }
 
     #[test]

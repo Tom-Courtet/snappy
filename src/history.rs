@@ -86,6 +86,16 @@ pub fn save_doc(image: &Path, doc: &Doc) -> Result<()> {
     )
 }
 
+// --- Lot « Capture » ---
+
+/// Enregistre le contexte de la capture (application, fenêtre, date) dans son
+/// `.json`, en gardant les annotations déjà présentes.
+pub fn save_context(image: &Path, context: &crate::model::CaptureContext) -> Result<()> {
+    let mut doc = load_doc(image);
+    doc.context = Some(context.clone());
+    save_doc(image, &doc)
+}
+
 /// Copie l'image dans le presse-papiers.
 pub fn copy_image(img: &RgbaImage) -> Result<()> {
     let mut clipboard = arboard::Clipboard::new().context("presse-papiers indisponible")?;
@@ -187,6 +197,7 @@ mod tests {
                 PALETTE[0].0,
                 4.0,
             )],
+            ..Default::default()
         };
         save_doc(&path, &doc).unwrap();
         assert_eq!(load_doc(&path), doc);

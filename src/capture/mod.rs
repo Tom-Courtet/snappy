@@ -217,6 +217,203 @@ mod platform;
 #[allow(unused_imports)] // `displays` : pour la suite (choix d'écran)
 pub use platform::{capture_all, cursor_position, displays, has_permission, request_permission};
 
+// --- Lot « Capture » : tous les écrans, fenêtre au premier plan --------------
+
+pub use platform::front_window;
+
+/// Fenêtre au premier plan de l'application active, relevée au moment de la
+/// capture (`Mode::Window`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrontWindow {
+    /// Cadre de la fenêtre dans l'espace du bureau (voir [`desktop_frame`]).
+    pub bounds: Frame,
+    pub title: String,
+    pub app: String,
+}
+
+/// Plus grand côté de l'image de tous les écrans, en pixels : au-delà, l'éditeur ne
+/// pourrait plus l'afficher (taille maximale des textures du GPU).
+pub const MAX_COMPOSITE_SIDE: f64 = 16384.0;
+
+/// Cadre d'un écran dans l'espace commun à tous les écrans (« espace du bureau ») :
+/// les points globaux sous macOS ; les pixels physiques du bureau virtuel sous
+/// Windows, où les cadres sont en points de chaque écran et ne s'alignent donc pas
+/// entre écrans d'échelles différentes.
+pub fn desktop_frame(shot: &Shot) -> Frame {
+    if cfg!(windows) {
+        Frame {
+            x: (shot.frame.x * shot.scale).round(),
+            y: (shot.frame.y * shot.scale).round(),
+            width: f64::from(shot.image.width()),
+            height: f64::from(shot.image.height()),
+        }
+    } else {
+        shot.frame
+    }
+}
+
+/// Place de chaque écran dans l'image de tous les écrans.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layout {
+    /// Coin haut gauche de l'ensemble, dans l'espace du bureau.
+    pub origin: (f64, f64),
+    /// Pixels de l'image par unité du bureau : celle de l'écran le plus fin (Retina),
+    /// réduite si l'image dépasserait [`MAX_COMPOSITE_SIDE`].
+    pub density: f64,
+    /// Taille de l'image, en pixels.
+    pub size: (u32, u32),
+    /// Par écran (même ordre) : `(x, y, largeur, hauteur)` en pixels de l'image.
+    pub places: Vec<(u32, u32, u32, u32)>,
+}
+
+/// Assemblage d'écrans donnés par leur cadre (espace du bureau) et la largeur de
+/// leur image en pixels. `None` sans écran, ou si l'ensemble est vide.
+pub fn layout(screens: &[(Frame, u32)]) -> Option<Layout> {
+    let usable: Vec<&(Frame, u32)> = screens.iter().filter(|(f, _)| !f.is_empty()).collect();
+    if usable.is_empty() || usable.len() != screens.len() {
+        return None;
+    }
+    let min_x = usable
+        .iter()
+        .map(|(f, _)| f.x)
+        .fold(f64::INFINITY, f64::min);
+    let min_y = usable
+        .iter()
+        .map(|(f, _)| f.y)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = usable
+        .iter()
+        .map(|(f, _)| f.x + f.width)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_y = usable
+        .iter()
+        .map(|(f, _)| f.y + f.height)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let finest = usable
+        .iter()
+        .map(|(f, w)| f64::from(*w) / f.width)
+        .fold(0.0, f64::max);
+    let widest = (max_x - min_x).max(max_y - min_y);
+    let density = finest.min(MAX_COMPOSITE_SIDE / widest);
+    // Aussi faux pour NaN (écran de largeur nulle, déjà écarté plus haut).
+    if density.is_nan() || density <= 0.0 {
+        return None;
+    }
+    let size = (
+        ((max_x - min_x) * density).round().max(1.0) as u32,
+        ((max_y - min_y) * density).round().max(1.0) as u32,
+    );
+    let places = usable
+        .iter()
+        .map(|(f, _)| {
+            let x = ((f.x - min_x) * density).round() as u32;
+            let y = ((f.y - min_y) * density).round() as u32;
+            let w = ((f.width * density).round() as u32).min(size.0 - x.min(size.0));
+            let h = ((f.height * density).round() as u32).min(size.1 - y.min(size.1));
+            (x, y, w, h)
+        })
+        .collect();
+    Some(Layout {
+        origin: (min_x, min_y),
+        density,
+        size,
+        places,
+    })
+}
+
+/// Rectangle de l'espace du bureau vers pixels d'une image qui couvre `area` à
+/// `density` pixels par unité : `(x, y, largeur, hauteur)`, élargi au pixel entier et
+/// rogné à l'image (`width` × `height`). `None` si rien ne reste.
+pub fn desktop_to_pixels(
+    rect: &Frame,
+    area: &Frame,
+    density: f64,
+    width: u32,
+    height: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let px = |v: f64, origin: f64, max: u32| ((v - origin) * density).clamp(0.0, f64::from(max));
+    let left = px(rect.x, area.x, width).floor();
+    let top = px(rect.y, area.y, height).floor();
+    let right = px(rect.x + rect.width, area.x, width).ceil();
+    let bottom = px(rect.y + rect.height, area.y, height).ceil();
+    // Valeurs entières bornées par la taille de l'image : conversions exactes.
+    (right > left && bottom > top).then_some((
+        left as u32,
+        top as u32,
+        (right - left) as u32,
+        (bottom - top) as u32,
+    ))
+}
+
+/// Surface commune de deux cadres (0 s'ils ne se recouvrent pas).
+fn overlap(a: &Frame, b: &Frame) -> f64 {
+    let w = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
+    let h = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
+    if w > 0.0 && h > 0.0 { w * h } else { 0.0 }
+}
+
+impl Capture {
+    /// Tous les écrans en une image, chacun à sa place sur le bureau, à la
+    /// définition de l'écran le plus fin (les autres sont agrandis). Les vides entre
+    /// écrans de tailles différentes restent transparents.
+    pub fn compose_all(&self, with_cursor: bool) -> Option<RgbaImage> {
+        let frames: Vec<(Frame, u32)> = self
+            .shots
+            .iter()
+            .map(|s| (desktop_frame(s), s.image.width()))
+            .collect();
+        let layout = layout(&frames)?;
+        let mut out = RgbaImage::new(layout.size.0, layout.size.1);
+        for (shot, &(x, y, w, h)) in self.shots.iter().zip(&layout.places) {
+            let (iw, ih) = shot.image.dimensions();
+            let mut img = shot.region(0, 0, iw, ih, with_cursor);
+            if (w, h) != (iw, ih) && w > 0 && h > 0 {
+                img = image::imageops::resize(&img, w, h, image::imageops::FilterType::CatmullRom);
+            }
+            image::imageops::replace(&mut out, &img, i64::from(x), i64::from(y));
+        }
+        Some(out)
+    }
+
+    /// Pixels du rectangle `rect` (espace du bureau), et l'écran qui en montre le
+    /// plus. Sur un seul écran : à sa définition ; à cheval sur plusieurs : découpé
+    /// dans l'image de tous les écrans. `None` s'il ne touche aucun écran.
+    pub fn crop_desktop(&self, rect: &Frame, with_cursor: bool) -> Option<(RgbaImage, usize)> {
+        let touched: Vec<(usize, f64)> = self
+            .shots
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i, overlap(&desktop_frame(s), rect)))
+            .filter(|&(_, a)| a > 0.0)
+            .collect();
+        let &(main, _) = touched.iter().max_by(|a, b| a.1.total_cmp(&b.1))?;
+        if touched.len() == 1 {
+            let shot = &self.shots[main];
+            let area = desktop_frame(shot);
+            let (iw, ih) = shot.image.dimensions();
+            let density = f64::from(iw) / area.width;
+            let (x, y, w, h) = desktop_to_pixels(rect, &area, density, iw, ih)?;
+            return Some((shot.region(x, y, w, h, with_cursor), main));
+        }
+        let frames: Vec<(Frame, u32)> = self
+            .shots
+            .iter()
+            .map(|s| (desktop_frame(s), s.image.width()))
+            .collect();
+        let layout = layout(&frames)?;
+        let all = self.compose_all(with_cursor)?;
+        let area = Frame {
+            x: layout.origin.0,
+            y: layout.origin.1,
+            width: f64::from(layout.size.0) / layout.density,
+            height: f64::from(layout.size.1) / layout.density,
+        };
+        let (x, y, w, h) =
+            desktop_to_pixels(rect, &area, layout.density, all.width(), all.height())?;
+        Some((image::imageops::crop_imm(&all, x, y, w, h).to_image(), main))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,6 +546,135 @@ mod tests {
         let mut screen = vec![10, 20, 30, 255, 0, 0, 0, 0];
         assert!(make_opaque(&mut screen));
         assert_eq!(screen, [10, 20, 30, 255, 0, 0, 0, 255]);
+    }
+
+    // --- Lot « Capture » ---
+
+    /// Écran uni de `w` × `h` points à l'échelle `scale`, en (`x`, `y`) points.
+    fn plain_shot(x: f64, y: f64, w: f64, h: f64, scale: f64, color: [u8; 4]) -> Shot {
+        let image =
+            RgbaImage::from_pixel((w * scale) as u32, (h * scale) as u32, image::Rgba(color));
+        Shot {
+            image,
+            // Sous Windows, les cadres sont en points de chaque écran.
+            frame: if cfg!(windows) {
+                frame(x / scale, y / scale, w, h)
+            } else {
+                frame(x, y, w, h)
+            },
+            scale,
+            display_id: 1,
+            windows: Vec::new(),
+            cursor: None,
+        }
+    }
+
+    #[test]
+    fn layout_places_screens_at_the_finest_density() {
+        // Retina 1470 × 956 à l'origine ; écran externe 1920 × 1080 à droite, plus haut.
+        let l = layout(&[
+            (frame(0.0, 0.0, 1470.0, 956.0), 2940),
+            (frame(1470.0, -100.0, 1920.0, 1080.0), 1920),
+        ])
+        .unwrap();
+        assert_eq!(l.density, 2.0);
+        assert_eq!(l.origin, (0.0, -100.0));
+        assert_eq!(l.size, (6780, 2160));
+        assert_eq!(l.places, vec![(0, 200, 2940, 1912), (2940, 0, 3840, 2160)]);
+        assert_eq!(layout(&[]), None);
+        assert_eq!(layout(&[(frame(0.0, 0.0, 0.0, 10.0), 0)]), None);
+    }
+
+    #[test]
+    fn layout_is_capped_for_huge_desktops() {
+        let l = layout(&[
+            (frame(0.0, 0.0, 15000.0, 1000.0), 30000),
+            (frame(15000.0, 0.0, 15000.0, 1000.0), 15000),
+        ])
+        .unwrap();
+        assert!(l.size.0 as f64 <= MAX_COMPOSITE_SIDE, "{l:?}");
+        assert!(l.density < 1.0);
+    }
+
+    #[test]
+    fn compose_all_fills_each_place_and_leaves_gaps_transparent() {
+        let red = [255, 0, 0, 255];
+        let blue = [0, 0, 255, 255];
+        // Retina 10 × 10 points en (0, 0) ; écran 1x 10 × 5 points à droite.
+        let capture = Capture {
+            shots: vec![
+                plain_shot(0.0, 0.0, 10.0, 10.0, 2.0, red),
+                plain_shot(10.0, 0.0, 10.0, 5.0, 1.0, blue),
+            ],
+            active: 0,
+        };
+        if cfg!(windows) {
+            // Sous Windows, l'espace commun est en pixels physiques : pas d'agrandissement.
+            return;
+        }
+        let all = capture.compose_all(false).unwrap();
+        assert_eq!(all.dimensions(), (40, 20));
+        assert_eq!(all.get_pixel(0, 0).0, red);
+        assert_eq!(all.get_pixel(19, 19).0, red);
+        // Écran 1x agrandi ×2.
+        assert_eq!(all.get_pixel(20, 0).0, blue);
+        assert_eq!(all.get_pixel(39, 9).0, blue);
+        // Sous l'écran plus petit : rien.
+        assert_eq!(all.get_pixel(30, 15).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn desktop_rectangles_become_pixels() {
+        let area = frame(-100.0, 0.0, 100.0, 50.0);
+        assert_eq!(
+            desktop_to_pixels(&frame(-90.0, 5.0, 20.0, 10.0), &area, 2.0, 200, 100),
+            Some((20, 10, 40, 20))
+        );
+        // Débordement : rogné ; demi-points : élargi.
+        assert_eq!(
+            desktop_to_pixels(&frame(-110.0, 40.25, 20.0, 20.0), &area, 2.0, 200, 100),
+            Some((0, 80, 20, 20))
+        );
+        assert_eq!(
+            desktop_to_pixels(&frame(10.0, 0.0, 5.0, 5.0), &area, 2.0, 200, 100),
+            None
+        );
+    }
+
+    #[test]
+    fn crop_desktop_uses_one_screen_or_the_assembly() {
+        if cfg!(windows) {
+            return;
+        }
+        let red = [255, 0, 0, 255];
+        let blue = [0, 0, 255, 255];
+        let capture = Capture {
+            shots: vec![
+                plain_shot(0.0, 0.0, 10.0, 10.0, 2.0, red),
+                plain_shot(10.0, 0.0, 10.0, 10.0, 1.0, blue),
+            ],
+            active: 0,
+        };
+        let (img, screen) = capture
+            .crop_desktop(&frame(12.0, 1.0, 4.0, 3.0), false)
+            .unwrap();
+        assert_eq!(
+            (img.dimensions(), screen),
+            ((4, 3), 1),
+            "à la définition de l'écran"
+        );
+        // À cheval, surtout sur le premier : assemblé à la définition la plus fine.
+        let (img, screen) = capture
+            .crop_desktop(&frame(4.0, 0.0, 8.0, 2.0), false)
+            .unwrap();
+        assert_eq!((img.dimensions(), screen), ((16, 4), 0));
+        assert_eq!(img.get_pixel(0, 0).0, red);
+        assert_eq!(img.get_pixel(15, 0).0, blue);
+        assert!(
+            capture
+                .crop_desktop(&frame(50.0, 50.0, 5.0, 5.0), false)
+                .is_none()
+        );
     }
 
     #[test]

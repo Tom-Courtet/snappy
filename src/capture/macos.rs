@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
 use image::RgbaImage;
-use objc2_app_kit::NSCursor;
+use objc2_app_kit::{NSCursor, NSRunningApplication, NSWorkspace};
 use objc2_core_foundation::{
     CFDictionary, CFNumber, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize,
 };
@@ -403,6 +403,17 @@ fn is_wanted(window: &WindowInfo, own_pid: i32, levels: SystemLevels) -> bool {
 
 /// Fenêtres visibles retenues par [`is_wanted`], de l'avant vers l'arrière.
 fn window_list() -> Vec<WindowInfo> {
+    let own_pid = i32::try_from(std::process::id()).unwrap_or(-1);
+    let levels = SystemLevels::current();
+    all_windows()
+        .into_iter()
+        .filter(|window| is_wanted(window, own_pid, levels))
+        .collect()
+}
+
+/// Toutes les fenêtres à l'écran (hors éléments du bureau), de l'avant vers
+/// l'arrière, sans filtre.
+fn all_windows() -> Vec<WindowInfo> {
     let options =
         CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements;
     let Some(list) = CGWindowListCopyWindowInfo(options, kCGNullWindowID) else {
@@ -411,12 +422,76 @@ fn window_list() -> Vec<WindowInfo> {
     };
     // SAFETY : la documentation garantit un tableau de dictionnaires à clés CFString.
     let list = unsafe { list.cast_unchecked::<CFDictionary<CFString, CFType>>() };
-    let own_pid = i32::try_from(std::process::id()).unwrap_or(-1);
-    let levels = SystemLevels::current();
     list.iter()
         .filter_map(|entry| parse_window(&entry))
-        .filter(|window| is_wanted(window, own_pid, levels))
         .collect()
+}
+
+// --- Fenêtre au premier plan (lot « Capture ») --------------------------------
+
+/// Processus de Snappy à ne jamais proposer : celui-ci et l'agent qui l'a lancé.
+fn own_pids() -> [i32; 2] {
+    [
+        i32::try_from(std::process::id()).unwrap_or(-1),
+        i32::try_from(std::os::unix::process::parent_id()).unwrap_or(-1),
+    ]
+}
+
+/// Application au premier plan (`NSWorkspace.frontmostApplication`) : processus et
+/// nom. `None` si c'est Snappy (agent, réglages…).
+fn front_app() -> Option<(i32, String)> {
+    objc2::rc::autoreleasepool(|_| {
+        let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+        let pid = app.processIdentifier();
+        let ours = NSRunningApplication::currentApplication().bundleIdentifier();
+        let same_bundle = matches!(
+            (app.bundleIdentifier(), ours),
+            (Some(a), Some(b)) if a.to_string() == b.to_string()
+        );
+        if own_pids().contains(&pid) || same_bundle {
+            return None;
+        }
+        let name = app.localizedName().map(|n| n.to_string());
+        Some((pid, name.unwrap_or_default()))
+    })
+}
+
+/// Fenêtre d'app ordinaire (niveau 0) la plus en avant du processus `front` ; sans
+/// processus connu, la plus en avant qui n'est pas à Snappy.
+fn front_of<'a>(
+    windows: &'a [WindowInfo],
+    front: Option<i32>,
+    own: &[i32],
+) -> Option<&'a WindowInfo> {
+    let mut candidates = windows.iter().filter(|w| {
+        w.layer == 0
+            && w.alpha > 0.0
+            && w.bounds.width >= MIN_WINDOW_SIZE
+            && w.bounds.height >= MIN_WINDOW_SIZE
+            && !own.contains(&w.pid)
+    });
+    match front {
+        Some(pid) => candidates.find(|w| w.pid == pid),
+        None => candidates.next(),
+    }
+}
+
+/// Fenêtre au premier plan de l'application active, en points globaux. `None` si
+/// l'application n'a aucune fenêtre visible (Finder sur le bureau…).
+pub fn front_window() -> Option<super::FrontWindow> {
+    let front = front_app();
+    let windows = all_windows();
+    let window = front_of(&windows, front.as_ref().map(|(pid, _)| *pid), &own_pids())?;
+    let app = match (&window.app, &front) {
+        (a, _) if !a.is_empty() => a.clone(),
+        (_, Some((_, name))) => name.clone(),
+        _ => String::new(),
+    };
+    Some(super::FrontWindow {
+        bounds: window.bounds,
+        title: window.title.clone(),
+        app,
+    })
 }
 
 /// Lit une entrée de `CGWindowListCopyWindowInfo`. `None` si les champs
@@ -711,6 +786,32 @@ mod tests {
             (rects[0].x, rects[0].width, rects[0].app.as_str()),
             (20, 60, "App")
         );
+    }
+
+    #[test]
+    fn the_front_window_belongs_to_the_front_app() {
+        let big = frame(0.0, 0.0, 400.0, 300.0);
+        let with_pid = |pid, layer, title: &str| WindowInfo {
+            pid,
+            ..window(layer, title, big)
+        };
+        let windows = [
+            with_pid(7, 25, "pastille"),
+            with_pid(1, 0, "Snappy"),
+            with_pid(3, 0, "Notes"),
+            with_pid(9, 0, "Safari — devant"),
+            with_pid(9, 0, "Safari — derrière"),
+        ];
+        let own = [1, 2];
+        let title = |w: Option<&WindowInfo>| w.map(|w| w.title.clone());
+        assert_eq!(
+            title(front_of(&windows, Some(9), &own)),
+            Some("Safari — devant".into())
+        );
+        // Application sans fenêtre : rien (repli sur la sélection de zone).
+        assert_eq!(title(front_of(&windows, Some(5), &own)), None);
+        // Application inconnue (ou Snappy) : la première fenêtre qui n'est pas à nous.
+        assert_eq!(title(front_of(&windows, None, &own)), Some("Notes".into()));
     }
 
     #[test]
