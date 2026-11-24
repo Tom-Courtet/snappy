@@ -15,6 +15,7 @@
 //! ⌘C copier ; ⌘S enregistrer ; ⌘0 ajuster ; ⌘1 taille réelle.
 
 mod bars;
+mod image_tab;
 mod prefs;
 mod preview;
 mod tools;
@@ -42,6 +43,7 @@ use tools::{Metrics, Style, TOOLS, Tool, extend_shape, new_shape};
 pub fn run(store: Store, path: PathBuf) -> Result<()> {
     let base = history::read_png(&path)?;
     let doc = history::load_doc(&path);
+    let base = crate::effects::working_base(base, &doc.edits);
     let name = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -149,6 +151,8 @@ pub(crate) struct Editor {
     picking: bool,
     /// Champ hexadécimal de la couleur personnalisée.
     hex_input: String,
+    /// Lot « Éditeur : image et effets » : fenêtre « Image » et modes.
+    image: image_tab::ImageTab,
 }
 
 /// Historique d'annulation maximal.
@@ -184,6 +188,7 @@ impl Editor {
             last_export: None,
             density: 2.0,
             picking: false,
+            image: Default::default(),
         }
     }
 
@@ -338,7 +343,7 @@ impl Editor {
 
     fn flattened(&mut self) -> RgbaImage {
         self.commit_text();
-        render::render(&self.base, &self.doc.annotations)
+        crate::effects::apply_export(&self.base, &self.doc)
     }
 
     fn copy(&mut self) {
@@ -354,6 +359,7 @@ impl Editor {
         let dir = self.store.save_dir(&self.store.load());
         match history::export(&dir, &self.path, &img) {
             Ok(path) => {
+                crate::effects::write_dpi(&path, self.doc.dpi);
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
                 self.say(format!(
                     "{} Enregistré : {}",
@@ -671,8 +677,10 @@ impl Editor {
                 }
                 let response =
                     ui.interact(outer, ui.scope_id().with("canvas"), Sense::click_and_drag());
-                self.pointer(&ctx, &response, view);
-                self.context_menu(&response, view);
+                if !self.image_canvas(&ctx, &response, &painter, view) {
+                    self.pointer(&ctx, &response, view);
+                    self.context_menu(&response, view);
+                }
 
                 if let Some(i) = self.hidden()
                     && self.text.is_none()
@@ -913,6 +921,7 @@ impl Editor {
     /// Menu du clic droit sur une annotation.
     fn context_menu(&mut self, response: &egui::Response, _view: View) {
         response.context_menu(|ui| {
+            self.image_menu(ui);
             if self.selected.is_none() {
                 ui.label(egui::RichText::new("Rien de sélectionné").color(theme::TEXT_DIM));
                 return;
@@ -1052,6 +1061,7 @@ impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.density = ctx.pixels_per_point().max(1.0);
+        self.image_ui(&ctx);
         self.shortcuts(&ctx);
         egui::Panel::top("tools")
             .frame(

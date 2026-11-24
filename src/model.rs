@@ -700,6 +700,21 @@ pub struct Doc {
     /// sinon (format inchangé).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<CaptureContext>,
+    // --- Lot « Éditeur : image et effets » (voir `crate::effects`) ---
+    /// Retouches de l'image d'origine (recadrage, rotation…), rejouées dans l'ordre.
+    /// Les annotations sont en pixels de l'image retouchée.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<crate::effects::ImageEdit>,
+    /// Bordure et effets, appliqués à l'export après les annotations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border: Option<crate::effects::BorderEffects>,
+    /// Zone de travail automatique : à l'export, l'image s'agrandit (sur ce fond)
+    /// pour contenir les annotations qui dépassent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_auto: Option<crate::effects::Background>,
+    /// Résolution écrite dans le PNG exporté (métadonnée seule).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dpi: Option<f32>,
 }
 
 // --- Lot « Capture » ---
