@@ -32,6 +32,12 @@ tray-icon = { version = "0.26.1", default-features = false }
 # Déjà tiré par eframe : aucun poids en plus.
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 
+# --- Lot « Vidéo » ---
+# Export GIF du lecteur vidéo, en pur Rust (MIT/Apache ; quantification NeuQuant de
+# `color_quant`, MIT). Pas gifski : AGPL.
+gif = { version = "0.14.2", default-features = false, features = ["std", "color_quant"] }
+# --- fin du lot « Vidéo » ---
+
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
 objc2 = "0.6.5"
@@ -40,6 +46,15 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFString", "CFArray", "CFDictionary", "CFNumber"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGEvent", "CGEventTypes", "CGImage", "CGWindow", "CGWindowLevel", "CGGeometry", "CGRemoteOperation", "libc"] }
+
+# --- Lot « Vidéo » ---
+# Enregistrement : ScreenCaptureKit (`SCStream` + `SCRecordingOutput`, macOS 15+), qui
+# écrit directement un MP4 H.264. Lecteur : AVFoundation (images, découpe, vitesse,
+# muet, assemblage des segments d'une pause). Même famille objc2 0.6 / 0.3.2.
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "libc", "SCShareableContent", "SCStream", "SCRecordingOutput", "SCError", "objc2-av-foundation", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "AVAsset", "AVAssetTrack", "AVAssetImageGenerator", "AVAssetExportSession", "AVComposition", "AVCompositionTrack", "AVMediaFormat", "AVVideoSettings", "AVAudioProcessingSettings", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMTime", "CMTimeRange"] }
+# --- fin du lot « Vidéo » ---
 
 # Capture GDI, DPI par écran, position de la surcouche, console pour la ligne de
 # commande. Déjà tiré par tray-icon et winit.

@@ -52,6 +52,7 @@ Usage :
   snappy --screen         capture l'écran du curseur et l'ouvre dans l'éditeur
   snappy --previous       capture la même zone que la fois précédente
   snappy --edit <png>     ouvre une image dans l'éditeur
+  snappy --play <mp4>     ouvre une vidéo dans le lecteur (découpe, GIF, image)
   snappy --settings       ouvre les réglages (raccourcis, délai, dossier)
   snappy --export <png> <sortie.png>
                           aplatit une capture et ses annotations (.json à côté)
@@ -99,6 +100,13 @@ fn main() -> Result<()> {
             Err(_) => settings::run(store),
         },
         Some(settings::WINDOW_ARG) => settings::run(store),
+        // Lot « Vidéo » : barre d'enregistrement (lancée par `--capture video`) et
+        // lecteur.
+        Some(video::BAR_ARG) => video::run_bar(store, args.next()),
+        Some(video::PLAY_ARG) => {
+            let path = args.next().context("--play attend le chemin d'une vidéo")?;
+            video::play(store, PathBuf::from(path))
+        }
         Some("--export") => {
             let input = PathBuf::from(args.next().context("--export attend une capture")?);
             let output = PathBuf::from(
