@@ -1130,6 +1130,141 @@ impl Annotation {
     }
 }
 
+// --- Poignées de cadre (8 carrés autour de la forme sélectionnée) -------------------
+
+/// Plus petit côté d'un cadre tiré par ses poignées, en pixels de l'image.
+const MIN_FRAME: f32 = 4.0;
+
+/// Les 8 poignées d'un cadre : coins et milieux, dans le sens horaire depuis le coin
+/// haut gauche (la poignée 2 est le coin haut droit).
+pub fn frame_handles(r: Bounds) -> [Pt; 8] {
+    let c = r.center();
+    [
+        r.min,
+        Pt::new(c.x, r.min.y),
+        Pt::new(r.max.x, r.min.y),
+        Pt::new(r.max.x, c.y),
+        r.max,
+        Pt::new(c.x, r.max.y),
+        Pt::new(r.min.x, r.max.y),
+        Pt::new(r.min.x, c.y),
+    ]
+}
+
+/// Nouveau cadre quand la poignée `handle` de `from` est tirée en `p`. Le côté ou le
+/// coin opposé reste en place ; on ne passe jamais de l'autre côté. `uniform` : les
+/// proportions sont gardées (la poignée d'un bord agrandit dans les deux sens).
+pub fn drag_frame(from: Bounds, handle: usize, p: Pt, uniform: bool) -> Bounds {
+    let (w, h) = (from.width().max(1.0), from.height().max(1.0));
+    if !uniform {
+        let (mut min, mut max) = (from.min, from.max);
+        if matches!(handle, 0 | 6 | 7) {
+            min.x = p.x.min(max.x - MIN_FRAME);
+        }
+        if matches!(handle, 2..=4) {
+            max.x = p.x.max(min.x + MIN_FRAME);
+        }
+        if matches!(handle, 0..=2) {
+            min.y = p.y.min(max.y - MIN_FRAME);
+        }
+        if matches!(handle, 4..=6) {
+            max.y = p.y.max(min.y + MIN_FRAME);
+        }
+        return Bounds { min, max };
+    }
+    let anchor = frame_handles(from)[(handle + 4) % 8];
+    let (kx, ky) = ((p.x - anchor.x).abs() / w, (p.y - anchor.y).abs() / h);
+    let k = match handle {
+        1 | 5 => ky,
+        3 | 7 => kx,
+        _ => kx.max(ky),
+    }
+    .max(MIN_FRAME / w.min(h));
+    let (nw, nh) = (w * k, h * k);
+    let c = from.center();
+    let x = match handle {
+        0 | 6 | 7 => anchor.x - nw,
+        2..=4 => anchor.x,
+        _ => c.x - nw / 2.0,
+    };
+    let y = match handle {
+        0..=2 => anchor.y - nh,
+        4..=6 => anchor.y,
+        _ => c.y - nh / 2.0,
+    };
+    Bounds {
+        min: Pt::new(x, y),
+        max: Pt::new(x + nw, y + nh),
+    }
+}
+
+impl Annotation {
+    /// Cadre à 8 poignées de la forme, `None` si elle se règle par ses propres points
+    /// (flèches, lignes, polygones, bulles, pastilles, loupes).
+    pub fn frame(&self, text_size: impl TextSize) -> Option<Bounds> {
+        match &self.shape {
+            Shape::Rect { .. }
+            | Shape::Ellipse { .. }
+            | Shape::Highlight { .. }
+            | Shape::Spotlight { .. }
+            | Shape::Pixelate { .. }
+            | Shape::Blur { .. }
+            | Shape::Bracket { .. }
+            | Shape::Image { .. }
+            | Shape::Pen { .. }
+            | Shape::Text { .. }
+            | Shape::Stamp { .. }
+            | Shape::Label { .. } => Some(self.bounds(text_size)),
+            _ => None,
+        }
+    }
+
+    /// La forme garde-t-elle ses proportions quand on tire son cadre ? (Textes,
+    /// tampons, images.)
+    pub fn keeps_ratio(&self) -> bool {
+        matches!(
+            self.shape,
+            Shape::Text { .. } | Shape::Stamp { .. } | Shape::Label { .. } | Shape::Image { .. }
+        )
+    }
+
+    /// Étire la forme de son cadre `from` au cadre `to` (voir [`drag_frame`]). Les
+    /// textes et tampons changent de taille de police, l'épaisseur du trait ne change
+    /// pas.
+    pub fn fit(&mut self, from: Bounds, to: Bounds) {
+        let ratio = |new: f32, old: f32| if old > 0.01 { new / old } else { 1.0 };
+        let (sx, sy) = (
+            ratio(to.width(), from.width()),
+            ratio(to.height(), from.height()),
+        );
+        let map = |p: &mut Pt| {
+            p.x = to.min.x + (p.x - from.min.x) * sx;
+            p.y = to.min.y + (p.y - from.min.y) * sy;
+        };
+        match &mut self.shape {
+            Shape::Rect { a, b, .. }
+            | Shape::Ellipse { a, b }
+            | Shape::Highlight { a, b }
+            | Shape::Spotlight { a, b }
+            | Shape::Pixelate { a, b }
+            | Shape::Blur { a, b }
+            | Shape::Bracket { a, b, .. }
+            | Shape::Image { a, b, .. } => {
+                map(a);
+                map(b);
+            }
+            Shape::Pen { points } => points.iter_mut().for_each(map),
+            Shape::Text { at, size, .. }
+            | Shape::Stamp { at, size, .. }
+            | Shape::Label { at, size, .. } => {
+                map(at);
+                *size = (*size * sy).max(2.0);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Cadre d'une bulle : le texte et ses marges.
 pub fn bubble_box(at: Pt, text: &str, size: f32, text_size: &impl TextSize) -> Bounds {
     let (w, h) = text_size(text, size);
@@ -1335,6 +1470,60 @@ mod tests {
         r.move_handle(0, Pt::new(0.0, 5.0)); // coin haut gauche
         let b = r.bounds(no_text);
         assert_eq!((b.min, b.max), (Pt::new(0.0, 5.0), Pt::new(80.0, 90.0)));
+    }
+
+    #[test]
+    fn frame_handles_stretch_from_the_opposite_side() {
+        let r = Bounds::from_corners(Pt::new(10.0, 10.0), Pt::new(50.0, 30.0));
+        // Bord droit : seule la largeur change.
+        let b = drag_frame(r, 3, Pt::new(90.0, 0.0), false);
+        assert_eq!((b.min, b.max), (r.min, Pt::new(90.0, 30.0)));
+        // Coin haut gauche : le coin bas droit reste.
+        let b = drag_frame(r, 0, Pt::new(0.0, 5.0), false);
+        assert_eq!((b.min, b.max), (Pt::new(0.0, 5.0), r.max));
+        // Jamais de l'autre côté.
+        let b = drag_frame(r, 3, Pt::new(-100.0, 0.0), false);
+        assert!(b.width() >= 4.0 && b.min == r.min);
+        // Proportions gardées : 40×20 devient 80×40, ancré en haut à gauche.
+        let b = drag_frame(r, 4, Pt::new(90.0, 20.0), true);
+        assert_eq!((b.min, b.max), (r.min, Pt::new(90.0, 50.0)));
+        // Bord du haut, proportions gardées : centré horizontalement.
+        let b = drag_frame(r, 1, Pt::new(0.0, -10.0), true);
+        assert_eq!((b.min, b.max), (Pt::new(-10.0, -10.0), Pt::new(70.0, 30.0)));
+    }
+
+    #[test]
+    fn fitting_a_frame_moves_points_and_scales_text() {
+        let mut a = ann(rect(Pt::new(10.0, 10.0), Pt::new(50.0, 30.0)));
+        let from = a.frame(no_text).unwrap();
+        a.fit(
+            from,
+            Bounds::from_corners(Pt::new(10.0, 10.0), Pt::new(90.0, 30.0)),
+        );
+        assert_eq!(a.bounds(no_text).max, Pt::new(90.0, 30.0));
+        let mut s = ann(Shape::Stamp {
+            at: Pt::new(20.0, 20.0),
+            icon: "x".into(),
+            size: 20.0,
+        });
+        let from = s.frame(no_text).unwrap();
+        assert!(s.keeps_ratio());
+        let to = drag_frame(from, 4, Pt::new(50.0, 50.0), true);
+        s.fit(from, to);
+        assert_eq!(
+            s.shape,
+            Shape::Stamp {
+                at: Pt::new(30.0, 30.0),
+                icon: "x".into(),
+                size: 40.0,
+            }
+        );
+        // Les flèches gardent leurs poignées à elles.
+        assert!(
+            ann(arrow(Pt::new(0.0, 0.0), Pt::new(5.0, 5.0)))
+                .frame(no_text)
+                .is_none()
+        );
     }
 
     #[test]

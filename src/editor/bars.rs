@@ -143,6 +143,7 @@ impl Editor {
                 .clicked()
                 {
                     self.style.size = size;
+                    self.force_size = true;
                     self.style_changed();
                 }
             }
@@ -173,7 +174,7 @@ impl Editor {
         });
     }
 
-    fn color_options(&mut self, ui: &mut Ui) {
+    pub(super) fn color_options(&mut self, ui: &mut Ui) {
         for (color, name) in PALETTE {
             if swatch(ui, color, self.style.color == color)
                 .on_hover_text(name)
@@ -235,7 +236,7 @@ impl Editor {
     }
 
     /// Options propres à la forme (outil courant ou annotation sélectionnée).
-    fn shape_options(&mut self, ui: &mut Ui) {
+    pub(super) fn shape_options(&mut self, ui: &mut Ui) {
         let tool = self.options_tool();
         let mut changed = false;
         match tool {
@@ -502,7 +503,7 @@ fn word(text: &str) -> RichText {
 impl Editor {
     /// Options ajoutées par ce lot, selon l'outil : type de trait, opacité, extérieur
     /// des formes, style du texte, bulles, pastilles, polygones, accolades.
-    fn extra_options(&mut self, ui: &mut Ui) {
+    pub(super) fn extra_options(&mut self, ui: &mut Ui) {
         use crate::model::{BracketSide, BubbleKind, EndShape, LineStyle, StepFormat, StepTail};
         let tool = self.options_tool();
         let mut changed = false;
@@ -769,15 +770,17 @@ impl Editor {
             }
         }
         let mut pct = (self.style.opacity * 100.0).round();
-        if ui
-            .add(
-                egui::DragValue::new(&mut pct)
-                    .range(10.0..=100.0)
-                    .speed(1.0)
-                    .suffix(" %"),
-            )
-            .on_hover_text("Opacité")
-            .changed()
+        // Dans « Options de dessin », l'opacité a son curseur.
+        if !self.in_drawing_options
+            && ui
+                .add(
+                    egui::DragValue::new(&mut pct)
+                        .range(10.0..=100.0)
+                        .speed(1.0)
+                        .suffix(" %"),
+                )
+                .on_hover_text("Opacité")
+                .changed()
         {
             self.style.opacity = pct / 100.0;
             changed = true;

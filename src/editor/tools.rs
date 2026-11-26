@@ -347,6 +347,28 @@ impl Style {
         self.apply_options(ann);
     }
 
+    /// Comme [`Self::apply`], sans toucher aux tailles (épaisseur, taille du texte ou
+    /// du tampon, arrondi gardé tant que « Coins arrondis » ne change pas) : une
+    /// annotation agrandie par ses poignées, ou réglée dans « Options de dessin »,
+    /// garde sa taille quand on change sa couleur.
+    pub fn apply_keeping_size(&self, ann: &mut Annotation, m: Metrics) {
+        let before = ann.clone();
+        self.apply(ann, m);
+        ann.width = before.width;
+        match (&mut ann.shape, &before.shape) {
+            (Shape::Text { size, .. }, Shape::Text { size: old, .. })
+            | (Shape::Bubble { size, .. }, Shape::Bubble { size: old, .. })
+            | (Shape::Stamp { size, .. }, Shape::Stamp { size: old, .. })
+            | (Shape::Label { size, .. }, Shape::Label { size: old, .. }) => *size = *old,
+            (Shape::Rect { radius, .. }, Shape::Rect { radius: old, .. })
+                if (*old > 0.0) == self.rounded =>
+            {
+                *radius = *old;
+            }
+            _ => {}
+        }
+    }
+
     /// Reprend les options d'une annotation qu'on vient de sélectionner : les
     /// réglages affichés sont les siens.
     pub fn adopt(&mut self, ann: &Annotation) {

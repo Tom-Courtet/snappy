@@ -22,6 +22,8 @@
 
 mod bars;
 mod extras;
+// Poignées de cadre et « Options de dessin » (demandés après essai).
+mod frame;
 mod image_tab;
 mod links;
 // Lot « Aperçus et tampons » : vignettes rendues, palette des préréglages, panneau des
@@ -224,6 +226,21 @@ pub(crate) struct Editor {
     stamp_anchor: egui::Pos2,
     /// Image où un panneau flottant s'est ouvert (ce clic-là ne le referme pas).
     popup_frame: u64,
+    // --- Poignées de cadre et « Options de dessin » (voir `frame.rs`)
+    /// Annotation au début de l'étirement par une poignée de cadre.
+    frame_start: Option<(usize, Annotation)>,
+    /// « Options de dessin » ouvertes pour cette annotation.
+    drawing_options: Option<usize>,
+    /// Un curseur des options est tiré (un seul pas d'annulation).
+    options_editing: bool,
+    /// Les options de la barre sont dessinées dans « Options de dessin ».
+    in_drawing_options: bool,
+    /// Taille S / M / L et échelle des tampons à la dernière application du style :
+    /// tant qu'elles ne changent pas, changer de couleur garde la taille de
+    /// l'annotation.
+    size_seen: (tools::Size, f32),
+    /// S / M / L cliqué : la taille s'applique même si c'est déjà la courante.
+    force_size: bool,
 }
 
 /// Historique d'annulation maximal.
@@ -237,6 +254,7 @@ impl Editor {
         let prefs_path = Prefs::path(&store);
         let prefs = Prefs::load(&prefs_path);
         let saved_doc = doc.clone();
+        let size_seen = (prefs.style.size, prefs.style.stamp_factor());
         Self {
             hex_input: prefs.style.color.hex(),
             store,
@@ -284,6 +302,12 @@ impl Editor {
             stamp_panel: None,
             stamp_anchor: egui::pos2(12.0, 90.0),
             popup_frame: 0,
+            frame_start: None,
+            drawing_options: None,
+            options_editing: false,
+            in_drawing_options: false,
+            size_seen,
+            force_size: false,
         }
     }
 
@@ -423,7 +447,14 @@ impl Editor {
             return;
         };
         let mut new = ann.clone();
-        self.style.apply(&mut new, m);
+        let now = (self.style.size, self.style.stamp_factor());
+        let keep = !std::mem::take(&mut self.force_size) && self.size_seen == now;
+        self.size_seen = now;
+        if keep {
+            self.style.apply_keeping_size(&mut new, m);
+        } else {
+            self.style.apply(&mut new, m);
+        }
         if &new != ann {
             self.checkpoint();
             self.doc.annotations[i] = new;
@@ -800,6 +831,7 @@ impl Editor {
                 Act::Tool(t) => self.set_tool(t),
                 Act::Size(s) => {
                     self.style.size = s;
+                    self.force_size = true;
                     self.style_changed();
                 }
                 Act::Undo => self.undo(),
@@ -881,7 +913,9 @@ impl Editor {
                     ui.interact(outer, ui.scope_id().with("canvas"), Sense::click_and_drag());
                 self.dropped_files(&ctx, &response, view);
                 if !self.image_canvas(&ctx, &response, &painter, view) {
-                    if !self.extra_pointer(&ctx, &response, view) {
+                    if !self.options_click(&response, view)
+                        && !self.extra_pointer(&ctx, &response, view)
+                    {
                         self.pointer(&ctx, &response, view);
                     }
                     self.context_menu(&response, view);
@@ -896,6 +930,7 @@ impl Editor {
                 self.extra_paint(&painter, view);
                 if let Some(i) = self.selected
                     && let Some(ann) = self.doc.annotations.get(i)
+                    && self.frame_of(i).is_none()
                 {
                     if self.drag.is_none() {
                         preview::selection(&painter, view.rect(ann.bounds(render::text_size)));
@@ -903,7 +938,9 @@ impl Editor {
                     let points: Vec<_> = ann.handles().iter().map(|p| view.to_screen(*p)).collect();
                     preview::handles(&painter, &points);
                 }
+                self.paint_frame(&ctx, &painter, view);
                 self.text_box(ui, &painter, view);
+                self.options_window(&ctx, view);
             });
     }
 
@@ -918,6 +955,10 @@ impl Editor {
     /// Poignée de l'annotation sélectionnée sous le point d'écran `p`.
     fn handle_at(&self, p: egui::Pos2, view: View) -> Option<(usize, usize)> {
         let i = self.selected?;
+        // Forme à cadre : ses 8 poignées remplacent les siennes.
+        if let Some(frame) = self.frame_of(i) {
+            return frame::handle_at(frame, p, view).map(|h| (i, frame::FIRST + h));
+        }
         let ann = self.doc.annotations.get(i)?;
         ann.handles()
             .iter()
@@ -937,8 +978,8 @@ impl Editor {
                 CursorIcon::Crosshair
             } else if self.drag.is_some() {
                 CursorIcon::Grabbing
-            } else if self.handle_at(p, view).is_some() {
-                CursorIcon::Grab
+            } else if let Some((_, handle)) = self.handle_at(p, view) {
+                frame::cursor(handle)
             } else {
                 match self.tool {
                     Tool::Select => match self.hit(view.to_image(p), view.scale) {
@@ -1093,7 +1134,9 @@ impl Editor {
                     });
                 }
                 Drag::Handle { index, handle, .. } => {
-                    if let Some(ann) = self.doc.annotations.get_mut(index) {
+                    if handle >= frame::FIRST {
+                        self.stretch(index, handle - frame::FIRST, pt, shift);
+                    } else if let Some(ann) = self.doc.annotations.get_mut(index) {
                         ann.move_handle(handle, pt);
                     }
                     self.drag = Some(Drag::Handle {
@@ -1144,6 +1187,7 @@ impl Editor {
                 }
                 Some(Drag::Marquee { .. } | Drag::Grab { .. }) | None => {}
             }
+            self.frame_start = None;
             self.rendered = None;
         }
     }

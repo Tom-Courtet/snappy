@@ -407,3 +407,10 @@ Tout ce qui suit est **fusionné et compilé** (macOS + Windows), couvert par de
 - **Snappy rouvert depuis le Finder** alors qu'il tourne : l'espace de travail s'affiche.
 - **Aperçus rendus** (préréglages, favoris, variantes) et **panneau de tampons** (Classique en couleur, Réactions, Souris, Texte, Mes tampons).
 - Note : l'icône de la barre des menus était masquée par **Ice** (gestionnaire de barre des menus) : la déplacer dans sa section visible.
+
+## 11. Poignées de cadre et options de dessin (26/11/2026)
+
+- **8 poignées carrées** autour de la forme sélectionnée (coins et milieux), comme Screenpresso : rectangles, ellipses, surligneur, projecteur, flou, pixelisation, accolades, images, crayon, textes, tampons. Les bords n'étirent que dans un sens ; textes, tampons et images gardent leurs proportions (taille de police ou du tampon), ⇧ les garde pour toutes les formes. Les flèches, lignes, polygones, bulles, pastilles et loupes gardent leurs poignées rondes.
+- Les 4 poignées rondes des coins des rectangles (et des formes de la même famille) sont remplacées par ces carrés (demande du propriétaire).
+- **Carré orange en haut à droite** : un clic ouvre **« Options de dessin »** à côté de la forme : couleur, opacité, épaisseur, taille du texte ou du tampon, coins arrondis (en pixels), puis les options de la barre pour cette forme (plein, ombre, type de trait…). Sur une forme à cadre, le carré est aussi la poignée du coin : un glisser l'étire. Un clic ailleurs sur l'image ferme la fenêtre.
+- **D42 · Changer la couleur ne remet plus la taille à S / M / L.** Avant, toute retouche du style d'une annotation sélectionnée (couleur, ombre…) lui redonnait l'épaisseur et la taille de S / M / L. Désormais seule la taille change quand on clique S, M ou L (ou 1, 2, 3) ou qu'on tire le curseur des tampons ; sinon l'annotation garde sa taille (indispensable pour qu'une forme étirée ou réglée au pixel le reste). **Reco : garder** ; à toi de dire si tu préfères l'ancien comportement.
