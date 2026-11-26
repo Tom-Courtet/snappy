@@ -174,6 +174,10 @@ fn tool_shapes(
     let center = Pt::new(w / 2.0, h / 2.0);
     let shape = match tool {
         Tool::Select => None,
+        // Cote par l'extérieur : à plat, assez courte pour que ses bouts tiennent.
+        Tool::Arrow if style.arrow == crate::model::ArrowStyle::Inward => {
+            drag(place(36.0, 30.0), place(62.0, 30.0))
+        }
         Tool::Arrow => drag(place(14.0, 50.0), place(82.0, 12.0)),
         Tool::Line => drag(place(14.0, 46.0), place(82.0, 14.0)),
         Tool::Rect | Tool::Ellipse => drag(place(18.0, 12.0), place(78.0, 48.0)),

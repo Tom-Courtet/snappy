@@ -304,6 +304,29 @@ fn arrow(
     if len < 0.5 {
         return;
     }
+    if style == ArrowStyle::Inward {
+        // Cote par l'extérieur : trait prolongé, pointes vers l'intérieur.
+        let [a, b] = crate::model::dimension_line(from, to, width);
+        painter.line_segment(
+            [view.to_screen(a), view.to_screen(b)],
+            Stroke::new((width * view.scale).max(1.0), color),
+        );
+        let head = crate::model::dimension_head(width);
+        for (tip, back) in [(from, a), (to, b)] {
+            let d = tip.dist(back).max(1e-3);
+            let (ux, uy) = ((tip.x - back.x) / d, (tip.y - back.y) / d);
+            let half = head * 0.6;
+            let base = Pt::new(tip.x - ux * head, tip.y - uy * head);
+            let pts = [
+                tip,
+                Pt::new(base.x - uy * half, base.y + ux * half),
+                Pt::new(base.x + uy * half, base.y - ux * half),
+            ];
+            let pts = pts.iter().map(|p| view.to_screen(*p)).collect();
+            painter.add(EShape::convex_polygon(pts, color, Stroke::NONE));
+        }
+        return;
+    }
     let bend = if style == ArrowStyle::Big { None } else { bend };
     let line_width = if style == ArrowStyle::Big {
         width * 2.2
@@ -341,6 +364,7 @@ fn arrow(
             tip(to, control.unwrap_or(from));
             tip(from, control.unwrap_or(to));
         }
+        ArrowStyle::Inward => {}
         ArrowStyle::Connector => {
             let r = (width * 1.4).max(4.0) * view.scale;
             painter.circle_filled(view.to_screen(from), r, color);

@@ -502,6 +502,19 @@ fn draw_arrow(
         draw_big_arrow(pixmap, from, to, color, width, ts);
         return;
     }
+    if style == ArrowStyle::Inward {
+        // Cote par l'extérieur : trait prolongé, pointes vers l'intérieur.
+        let [a, b] = crate::model::dimension_line(from, to, width);
+        if let Some(path) = polyline(&[a, b]) {
+            pixmap.stroke_path(&path, &paint(color), &dashed(stroke(width), dash), ts, None);
+        }
+        let head = crate::model::dimension_head(width);
+        if let Some((ux, uy)) = unit(from, to) {
+            arrow_head(pixmap, from, ux, uy, head, color, width, ts);
+            arrow_head(pixmap, to, -ux, -uy, head, color, width, ts);
+        }
+        return;
+    }
     let points = arrow_points(from, to, bend);
     // Directions des bouts, tangentes à la courbe.
     let control = bend.map(|b| bend_control(from, to, b));
@@ -2013,6 +2026,31 @@ mod tests {
         let px = render(&white(60, 60), &[a]).get_pixel(30, 30).0;
         assert_eq!(px[0], 255);
         assert!((120..=135).contains(&px[1]), "moitié de blanc : {px:?}");
+    }
+
+    #[test]
+    fn inward_dimension_arrows_stick_out_past_both_ends() {
+        let mut a = ann(
+            Shape::Arrow {
+                from: Pt::new(80.0, 50.0),
+                to: Pt::new(160.0, 50.0),
+                style: ArrowStyle::Inward,
+                bend: None,
+            },
+            RED,
+        );
+        a.width = 4.0;
+        let img = render(&white(240, 100), &[a.clone()]);
+        // Le trait dépasse à gauche de `from` et à droite de `to`…
+        assert_eq!(img.get_pixel(50, 50).0, RED_PX);
+        assert_eq!(img.get_pixel(190, 50).0, RED_PX);
+        // … et les pointes sont dehors : larges juste avant les bouts, rien après le
+        // dépassement.
+        assert_eq!(img.get_pixel(70, 55).0, RED_PX);
+        assert_eq!(img.get_pixel(170, 55).0, RED_PX);
+        assert_eq!(img.get_pixel(120, 56).0, [255, 255, 255, 255]);
+        let b = a.bounds(text_size);
+        assert!(b.min.x < 50.0 && b.max.x > 190.0);
     }
 
     #[test]

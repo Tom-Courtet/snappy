@@ -250,6 +250,11 @@ impl Editor {
                         icons::CONNECTOR,
                         "Connecteur (ronds aux bouts)",
                     ),
+                    (
+                        ArrowStyle::Inward,
+                        icons::ARROW_DOUBLE,
+                        "Cote par l'extérieur (pointes vers l'intérieur)",
+                    ),
                 ] {
                     // Lot « Aperçus et tampons » : la variante rendue (l'icône reste
                     // dans l'infobulle).

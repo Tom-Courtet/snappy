@@ -114,6 +114,26 @@ pub enum ArrowStyle {
     Big,
     /// Trait terminé par deux ronds (relier deux éléments).
     Connector,
+    /// Cote par l'extérieur : les pointes, posées sur les deux bouts, regardent vers
+    /// l'intérieur, et le trait dépasse de chaque côté (toujours droite).
+    Inward,
+}
+
+/// Longueur d'une pointe de cote, pour une épaisseur de trait.
+pub fn dimension_head(width: f32) -> f32 {
+    (width * 4.0).max(12.0)
+}
+
+/// Bouts du trait d'une cote par l'extérieur : `from` et `to` prolongés au-delà des
+/// pointes.
+pub fn dimension_line(from: Pt, to: Pt, width: f32) -> [Pt; 2] {
+    let d = from.dist(to).max(1e-3);
+    let (ux, uy) = ((to.x - from.x) / d, (to.y - from.y) / d);
+    let tail = dimension_head(width) * 2.2;
+    [
+        Pt::new(from.x - ux * tail, from.y - uy * tail),
+        Pt::new(to.x + ux * tail, to.y + uy * tail),
+    ]
 }
 
 /// Forme d'une annotation. Les rectangles sont donnés par deux coins opposés
@@ -773,6 +793,15 @@ impl Annotation {
     pub fn bounds(&self, text_size: impl TextSize) -> Bounds {
         let r = |a: Pt, b: Pt| Bounds::from_corners(a, b);
         match &self.shape {
+            Shape::Arrow {
+                from,
+                to,
+                style: ArrowStyle::Inward,
+                ..
+            } => {
+                let [a, b] = dimension_line(*from, *to, self.width);
+                r(a, b)
+            }
             Shape::Arrow { from, to, bend, .. } => {
                 Bounds::from_points(arrow_points(*from, *to, *bend)).unwrap_or(r(*from, *to))
             }
@@ -879,7 +908,12 @@ impl Annotation {
                 } else {
                     0.0
                 };
-                dist_to_polyline(p, &arrow_points(*from, *to, *bend)) <= reach + extra
+                let line = if *style == ArrowStyle::Inward {
+                    dimension_line(*from, *to, self.width).to_vec()
+                } else {
+                    arrow_points(*from, *to, *bend)
+                };
+                dist_to_polyline(p, &line) <= reach + extra
             }
             Shape::Line { from, to } => dist_to_segment(p, *from, *to) <= reach,
             Shape::Pen { points } => dist_to_polyline(p, points) <= reach,
