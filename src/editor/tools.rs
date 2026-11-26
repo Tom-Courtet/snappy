@@ -186,6 +186,14 @@ pub struct Style {
     /// tampons). 1 : taille d'origine, non écrite dans `editor.json`.
     #[serde(skip_serializing_if = "is_unit_scale")]
     pub stamp_scale: f32,
+    /// Remplissage de -1 (extérieur) à 1 (intérieur), réglé dans « Options de
+    /// dessin » ; 0 : `fill` décide.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub fill_level: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 fn is_unit_scale(v: &f32) -> bool {
@@ -221,6 +229,7 @@ impl Default for Style {
             poly_end: EndShape::Plain,
             bracket: BracketSide::Left,
             stamp_scale: 1.0,
+            fill_level: 0.0,
         }
     }
 }
@@ -283,6 +292,11 @@ impl Style {
     /// Options du lot « annotations » qui ont un sens pour la forme de `ann`.
     pub fn apply_options(&self, ann: &mut Annotation) {
         ann.opacity = self.opacity.clamp(0.1, 1.0);
+        ann.fill_level = if is_fillable(&ann.shape) {
+            self.fill_level.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
         ann.dash = if is_stroked(&ann.shape) {
             self.dash
         } else {
@@ -409,6 +423,9 @@ impl Style {
             _ => {}
         }
         self.opacity = ann.opacity;
+        if is_fillable(&ann.shape) {
+            self.fill_level = ann.fill_level;
+        }
         if is_stroked(&ann.shape) {
             self.dash = ann.dash;
         }
@@ -425,6 +442,14 @@ impl Style {
 pub const LABEL_PREFIX: &str = "texte:";
 /// Préfixe d'un tampon personnel (`fichier:logo.png`, dans `<données>/stamps/`).
 pub const FILE_PREFIX: &str = "fichier:";
+
+/// La forme peut-elle être remplie (dedans ou dehors) ?
+pub fn is_fillable(shape: &Shape) -> bool {
+    matches!(
+        shape,
+        Shape::Rect { .. } | Shape::Ellipse { .. } | Shape::Polygon { .. }
+    )
+}
 
 /// La forme a-t-elle un trait (qui peut être pointillé) ?
 pub fn is_stroked(shape: &Shape) -> bool {

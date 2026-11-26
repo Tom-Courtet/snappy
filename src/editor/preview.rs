@@ -62,16 +62,24 @@ pub fn paint(painter: &Painter, view: View, ann: &Annotation) {
         Shape::Rect { a, b, radius } => {
             let r = rect(*a, *b);
             let corner = CornerRadius::same((radius * s).min(255.0) as u8);
-            if ann.fill {
-                painter.rect_filled(r, corner, color);
+            let level = ann.fill_amount();
+            if level > 0.0 {
+                painter.rect_filled(r, corner, color.gamma_multiply(level));
+            } else if level < 0.0 {
+                outside_bands(painter, r, color.gamma_multiply(-level));
             }
             painter.rect_stroke(r, corner, stroke, StrokeKind::Middle);
         }
         Shape::Ellipse { a, b } => {
             let r = rect(*a, *b);
-            let fill = if ann.fill {
-                color
+            let level = ann.fill_amount();
+            let fill = if level > 0.0 {
+                color.gamma_multiply(level)
             } else {
+                if level < 0.0 {
+                    // Aperçu : l'extérieur du cadre (le rendu exact suit l'ellipse).
+                    outside_bands(painter, r, color.gamma_multiply(-level));
+                }
                 Color32::TRANSPARENT
             };
             painter.add(EShape::ellipse_filled(r.center(), r.size() / 2.0, fill));
@@ -82,18 +90,7 @@ pub fn paint(painter: &Painter, view: View, ann: &Annotation) {
         }
         Shape::Spotlight { a, b } => {
             let r = rect(*a, *b);
-            let dim = Color32::from_black_alpha(150);
-            let all = painter.clip_rect();
-            for band in [
-                Rect::from_min_max(all.min, Pos2::new(all.max.x, r.min.y)),
-                Rect::from_min_max(Pos2::new(all.min.x, r.max.y), all.max),
-                Rect::from_min_max(Pos2::new(all.min.x, r.min.y), Pos2::new(r.min.x, r.max.y)),
-                Rect::from_min_max(Pos2::new(r.max.x, r.min.y), Pos2::new(all.max.x, r.max.y)),
-            ] {
-                if band.is_positive() {
-                    painter.rect_filled(band, 0.0, dim);
-                }
-            }
+            outside_bands(painter, r, Color32::from_black_alpha(150));
         }
         Shape::Pixelate { a, b } | Shape::Blur { a, b } => {
             let r = rect(*a, *b);
@@ -231,7 +228,7 @@ pub fn paint(painter: &Painter, view: View, ann: &Annotation) {
         // --- Lot « Éditeur : annotations »
         Shape::Polygon { points, closed, .. } => {
             let mut pts: Vec<Pos2> = points.iter().map(|p| view.to_screen(*p)).collect();
-            if ann.fill && pts.len() >= 3 {
+            if ann.fill_amount() > 0.0 && pts.len() >= 3 {
                 painter.add(EShape::convex_polygon(
                     pts.clone(),
                     color.gamma_multiply(0.5),
@@ -364,6 +361,22 @@ pub fn selection(painter: &Painter, rect: Rect) {
         r.left_top(),
     ];
     painter.extend(EShape::dashed_line(&corners, stroke, 6.0, 4.0));
+}
+
+/// Tout ce qui est autour du rectangle `r` (dans la zone de dessin), de cette
+/// couleur : projecteur, remplissage de l'extérieur.
+fn outside_bands(painter: &Painter, r: Rect, color: Color32) {
+    let all = painter.clip_rect();
+    for band in [
+        Rect::from_min_max(all.min, Pos2::new(all.max.x, r.min.y)),
+        Rect::from_min_max(Pos2::new(all.min.x, r.max.y), all.max),
+        Rect::from_min_max(Pos2::new(all.min.x, r.min.y), Pos2::new(r.min.x, r.max.y)),
+        Rect::from_min_max(Pos2::new(r.max.x, r.min.y), Pos2::new(all.max.x, r.max.y)),
+    ] {
+        if band.is_positive() {
+            painter.rect_filled(band, 0.0, color);
+        }
+    }
 }
 
 /// Rayon d'une poignée d'édition, en points.

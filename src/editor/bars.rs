@@ -286,6 +286,8 @@ impl Editor {
                     .clicked()
                 {
                     self.style.fill = !self.style.fill;
+                    // Le bouton « Plein » remet le remplissage à plein ou vide.
+                    self.style.fill_level = 0.0;
                     changed = true;
                 }
             }
@@ -669,6 +671,8 @@ impl Editor {
                     .clicked()
                 {
                     self.style.fill = !self.style.fill;
+                    // Le bouton « Plein » remet le remplissage à plein ou vide.
+                    self.style.fill_level = 0.0;
                     changed = true;
                 }
                 let ends = [

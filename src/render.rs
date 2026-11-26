@@ -231,8 +231,8 @@ fn draw(
         } => draw_arrow(pixmap, *from, *to, *style, *bend, color, w, dash, ts),
         Shape::Rect { a, b, radius } => {
             if let Some(path) = rounded_rect(Bounds::from_corners(*a, *b), *radius) {
-                if ann.fill {
-                    pixmap.fill_path(&path, &paint(color), FillRule::Winding, ts, None);
+                if let Some(inside) = inside_fill(ann) {
+                    pixmap.fill_path(&path, &paint(inside), FillRule::Winding, ts, None);
                 }
                 let mut s = stroke(w);
                 if *radius <= 0.0 {
@@ -245,8 +245,8 @@ fn draw(
         Shape::Ellipse { a, b } => {
             if let Some(path) = rect(Bounds::from_corners(*a, *b)).and_then(PathBuilder::from_oval)
             {
-                if ann.fill {
-                    pixmap.fill_path(&path, &paint(color), FillRule::Winding, ts, None);
+                if let Some(inside) = inside_fill(ann) {
+                    pixmap.fill_path(&path, &paint(inside), FillRule::Winding, ts, None);
                 }
                 pixmap.stroke_path(&path, &paint(color), &dashed(stroke(w), dash), ts, None);
             }
@@ -1000,6 +1000,15 @@ fn outside_path(pixmap: &Pixmap, ann: &Annotation) -> Option<tiny_skia::Path> {
     let shape = match &ann.shape {
         Shape::Rect { a, b, radius } => rounded_rect(Bounds::from_corners(*a, *b), *radius)?,
         Shape::Ellipse { a, b } => PathBuilder::from_oval(rect(Bounds::from_corners(*a, *b))?)?,
+        Shape::Polygon { points, .. } if points.len() >= 3 => {
+            let mut pb = PathBuilder::new();
+            pb.move_to(points[0].x, points[0].y);
+            for p in &points[1..] {
+                pb.line_to(p.x, p.y);
+            }
+            pb.close();
+            pb.finish()?
+        }
         _ => return None,
     };
     let mut pb = PathBuilder::new();
@@ -1047,6 +1056,29 @@ fn draw_outside(pixmap: &mut Pixmap, ann: &Annotation) {
         let dim = paint(Rgba(0, 0, 0, SPOTLIGHT_ALPHA));
         pixmap.fill_path(&path, &dim, FillRule::EvenOdd, Transform::identity(), None);
     }
+    let level = ann.fill_amount();
+    if level < 0.0 {
+        let c = ann.color;
+        let alpha = (f32::from(c.3) * -level).round() as u8;
+        let outside = paint(Rgba(c.0, c.1, c.2, alpha));
+        pixmap.fill_path(
+            &path,
+            &outside,
+            FillRule::EvenOdd,
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
+/// Couleur du remplissage intérieur (rectangle, ellipse, polygone), à l'opacité du
+/// niveau de remplissage ; `None` sans remplissage intérieur.
+fn inside_fill(ann: &Annotation) -> Option<Rgba> {
+    let level = ann.fill_amount();
+    (level > 0.0).then(|| {
+        let c = ann.color;
+        Rgba(c.0, c.1, c.2, (f32::from(c.3) * level).round() as u8)
+    })
 }
 
 /// Lueur d'un texte : contour épais de la couleur de la lueur, flouté, sous le texte.
@@ -1163,7 +1195,7 @@ fn draw_polygon(
         pb.close();
     }
     let Some(path) = pb.finish() else { return };
-    if ann.fill {
+    if let Some(inside) = inside_fill(ann) {
         // Plein : la forme est toujours fermée pour le remplissage.
         let mut fill = PathBuilder::new();
         fill.move_to(points[0].x, points[0].y);
@@ -1172,7 +1204,7 @@ fn draw_polygon(
         }
         fill.close();
         if let Some(fill) = fill.finish() {
-            pixmap.fill_path(&fill, &paint(color), FillRule::EvenOdd, ts, None);
+            pixmap.fill_path(&fill, &paint(inside), FillRule::EvenOdd, ts, None);
         }
     }
     pixmap.stroke_path(&path, &paint(color), &dashed(stroke(w), ann.dash), ts, None);
@@ -1981,6 +2013,27 @@ mod tests {
         let px = render(&white(60, 60), &[a]).get_pixel(30, 30).0;
         assert_eq!(px[0], 255);
         assert!((120..=135).contains(&px[1]), "moitié de blanc : {px:?}");
+    }
+
+    #[test]
+    fn fill_level_paints_inside_or_outside() {
+        let mut a = rect_ann(Pt::new(10.0, 10.0), Pt::new(50.0, 50.0));
+        // Moitié dedans : rouge à moitié sur blanc, dehors intact.
+        a.fill_level = 0.5;
+        let img = render(&white(60, 60), &[a.clone()]);
+        let inside = img.get_pixel(30, 30).0;
+        assert_eq!(inside[0], 255);
+        assert!((120..=135).contains(&inside[1]), "{inside:?}");
+        assert_eq!(img.get_pixel(2, 2).0, [255, 255, 255, 255]);
+        // Tout l'extérieur : rouge plein dehors, blanc dedans.
+        a.fill_level = -1.0;
+        let img = render(&white(60, 60), &[a.clone()]);
+        assert_eq!(img.get_pixel(2, 2).0, RED_PX);
+        assert_eq!(img.get_pixel(30, 30).0, [255, 255, 255, 255]);
+        // Un ancien fichier (« plein », sans niveau) reste plein.
+        a.fill_level = 0.0;
+        a.fill = true;
+        assert_eq!(render(&white(60, 60), &[a]).get_pixel(30, 30).0, RED_PX);
     }
 
     #[test]

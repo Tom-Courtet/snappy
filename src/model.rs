@@ -290,6 +290,11 @@ pub struct Annotation {
     /// Pastilles : couleur du numéro (`None` : noir ou blanc selon le fond).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_color: Option<Rgba>,
+    /// Rectangle, ellipse, polygone : remplissage de -1 à 1. Positif : l'intérieur,
+    /// à cette opacité ; négatif : tout l'extérieur. 0 : `fill` décide (plein ou
+    /// vide, comme avant).
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub fill_level: f32,
 }
 
 impl Annotation {
@@ -309,6 +314,23 @@ impl Annotation {
             step_format: StepFormat::Number,
             step_tail: StepTail::Pointer,
             text_color: None,
+            fill_level: 0.0,
+        }
+    }
+
+    /// Remplissage effectif, de -1 (tout l'extérieur) à 1 (tout l'intérieur).
+    pub fn fill_amount(&self) -> f32 {
+        if !matches!(
+            self.shape,
+            Shape::Rect { .. } | Shape::Ellipse { .. } | Shape::Polygon { .. }
+        ) {
+            0.0
+        } else if self.fill_level != 0.0 {
+            self.fill_level.clamp(-1.0, 1.0)
+        } else if self.fill {
+            1.0
+        } else {
+            0.0
         }
     }
 }
@@ -1111,10 +1133,12 @@ impl Annotation {
         }
     }
 
-    /// Le rectangle ou l'ellipse a-t-il un effet sur tout l'extérieur ?
+    /// Le rectangle ou l'ellipse a-t-il un effet sur tout l'extérieur ? (Ou la
+    /// forme un remplissage de l'extérieur.)
     pub fn affects_outside(&self) -> bool {
-        (self.dim_outside || self.blur_outside)
-            && matches!(self.shape, Shape::Rect { .. } | Shape::Ellipse { .. })
+        ((self.dim_outside || self.blur_outside)
+            && matches!(self.shape, Shape::Rect { .. } | Shape::Ellipse { .. }))
+            || self.fill_amount() < 0.0
     }
 
     /// L'ombre portée a-t-elle un sens pour cette forme ? (Pas pour les effets qui

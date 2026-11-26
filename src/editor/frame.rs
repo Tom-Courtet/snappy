@@ -11,7 +11,7 @@ use egui::{Color32, CursorIcon, Pos2, Rect, RichText, Stroke, StrokeKind, Ui, ve
 
 use super::Editor;
 use super::preview::View;
-use super::tools::is_stroked;
+use super::tools::{is_fillable, is_stroked};
 use crate::model::{self, Annotation, Bounds, Pt, Shape};
 use crate::render;
 
@@ -275,6 +275,32 @@ impl Editor {
                         .changed()
                     {
                         self.edit_annotation(i, |a| set_size(a, v));
+                    }
+                    ui.end_row();
+                }
+
+                if is_fillable(&ann.shape) {
+                    let mut v = (ann.fill_amount() * 100.0).round();
+                    ui.label("Remplissage :");
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut v, -100.0..=100.0)
+                                .suffix(" %")
+                                .integer(),
+                        )
+                        .on_hover_text(
+                            "Vers la droite : l'intérieur de la forme. Vers la gauche : \
+                             tout l'extérieur.",
+                        )
+                        .changed()
+                    {
+                        let level = v / 100.0;
+                        self.style.fill_level = level;
+                        self.style.fill = level > 0.0;
+                        self.edit_annotation(i, |a| {
+                            a.fill_level = level;
+                            a.fill = level > 0.0;
+                        });
                     }
                     ui.end_row();
                 }
