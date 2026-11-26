@@ -502,6 +502,30 @@ fn draw_arrow(
         draw_big_arrow(pixmap, from, to, color, width, ts);
         return;
     }
+    if style.is_dimension() {
+        // Lignes de rappel : fines, de la couleur de la cote, toujours pleines.
+        let thin = stroke((width * 0.5).max(1.0));
+        for [a, b] in crate::model::dimension_extensions(from, to, bend, width) {
+            if let Some(path) = polyline(&[a, b]) {
+                pixmap.stroke_path(&path, &paint(color), &thin, ts, None);
+            }
+        }
+    }
+    if style == ArrowStyle::Dimension {
+        // Cote : comme une double pointe, toujours droite.
+        draw_arrow(
+            pixmap,
+            from,
+            to,
+            ArrowStyle::Double,
+            None,
+            color,
+            width,
+            dash,
+            ts,
+        );
+        return;
+    }
     if style == ArrowStyle::Inward {
         // Cote par l'extérieur : trait prolongé, pointes vers l'intérieur.
         let [a, b] = crate::model::dimension_line(from, to, width);
@@ -2051,6 +2075,13 @@ mod tests {
         assert_eq!(img.get_pixel(120, 56).0, [255, 255, 255, 255]);
         let b = a.bounds(text_size);
         assert!(b.min.x < 50.0 && b.max.x > 190.0);
+        // Lignes de rappel aux deux bouts (par défaut vers le bas ici : `from` à
+        // gauche), qui dépassent un peu de l'autre côté du trait.
+        assert_eq!(img.get_pixel(80, 90).0, RED_PX);
+        assert_eq!(img.get_pixel(160, 90).0, RED_PX);
+        assert_eq!(img.get_pixel(80, 45).0, RED_PX);
+        assert_eq!(img.get_pixel(120, 90).0, [255, 255, 255, 255]);
+        assert!(b.max.y > 95.0);
     }
 
     #[test]

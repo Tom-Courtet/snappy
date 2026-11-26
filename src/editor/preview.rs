@@ -304,6 +304,25 @@ fn arrow(
     if len < 0.5 {
         return;
     }
+    if style.is_dimension() {
+        let thin = Stroke::new((width * 0.5 * view.scale).max(1.0), color);
+        for [a, b] in crate::model::dimension_extensions(from, to, bend, width) {
+            painter.line_segment([view.to_screen(a), view.to_screen(b)], thin);
+        }
+    }
+    if style == ArrowStyle::Dimension {
+        arrow(
+            painter,
+            view,
+            from,
+            to,
+            ArrowStyle::Double,
+            None,
+            width,
+            color,
+        );
+        return;
+    }
     if style == ArrowStyle::Inward {
         // Cote par l'extérieur : trait prolongé, pointes vers l'intérieur.
         let [a, b] = crate::model::dimension_line(from, to, width);
@@ -364,7 +383,7 @@ fn arrow(
             tip(to, control.unwrap_or(from));
             tip(from, control.unwrap_or(to));
         }
-        ArrowStyle::Inward => {}
+        ArrowStyle::Inward | ArrowStyle::Dimension => {}
         ArrowStyle::Connector => {
             let r = (width * 1.4).max(4.0) * view.scale;
             painter.circle_filled(view.to_screen(from), r, color);

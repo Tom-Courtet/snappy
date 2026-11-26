@@ -115,8 +115,62 @@ pub enum ArrowStyle {
     /// Trait terminé par deux ronds (relier deux éléments).
     Connector,
     /// Cote par l'extérieur : les pointes, posées sur les deux bouts, regardent vers
-    /// l'intérieur, et le trait dépasse de chaque côté (toujours droite).
+    /// l'intérieur, et le trait dépasse de chaque côté. Lignes de rappel aux deux
+    /// bouts (voir [`dimension_extensions`]).
     Inward,
+    /// Cote : pointes aux deux bouts vers l'extérieur, et lignes de rappel. Diffère
+    /// de `Double` par ces lignes et parce qu'elle reste droite.
+    Dimension,
+}
+
+impl ArrowStyle {
+    /// Cote (droite, lignes de rappel, poignée du milieu = longueur des rappels).
+    pub fn is_dimension(self) -> bool {
+        matches!(self, Self::Inward | Self::Dimension)
+    }
+}
+
+/// Normale d'une cote : le côté où partent ses lignes de rappel par défaut (vers le
+/// haut pour une cote tracée de gauche à droite, la pointe désignée en premier).
+fn dimension_normal(from: Pt, to: Pt) -> (f32, f32) {
+    let d = from.dist(to).max(1e-3);
+    let (ux, uy) = ((to.x - from.x) / d, (to.y - from.y) / d);
+    (-uy, ux)
+}
+
+/// Longueur des lignes de rappel d'une cote, signée (négative : de l'autre côté).
+/// `bend` (la poignée du milieu) la donne ; sans elle, une longueur par défaut.
+pub fn dimension_reach(from: Pt, to: Pt, bend: Option<Pt>, width: f32) -> f32 {
+    match bend {
+        Some(b) => {
+            let (nx, ny) = dimension_normal(from, to);
+            (b.x - from.x) * nx + (b.y - from.y) * ny
+        }
+        None => dimension_head(width) * 3.0,
+    }
+}
+
+/// Poignée du milieu d'une cote : au bout des lignes de rappel, à mi-chemin.
+pub fn dimension_handle(from: Pt, to: Pt, bend: Option<Pt>, width: f32) -> Pt {
+    let (nx, ny) = dimension_normal(from, to);
+    let reach = dimension_reach(from, to, bend, width);
+    let m = from.lerp(to, 0.5);
+    Pt::new(m.x + nx * reach, m.y + ny * reach)
+}
+
+/// Lignes de rappel d'une cote : des bouts jusqu'à la longueur réglée, et un peu
+/// au-delà du trait de l'autre côté.
+pub fn dimension_extensions(from: Pt, to: Pt, bend: Option<Pt>, width: f32) -> [[Pt; 2]; 2] {
+    let (nx, ny) = dimension_normal(from, to);
+    let reach = dimension_reach(from, to, bend, width);
+    let over = -reach.signum() * dimension_head(width) * 0.5;
+    let ext = |p: Pt| {
+        [
+            Pt::new(p.x + nx * reach, p.y + ny * reach),
+            Pt::new(p.x + nx * over, p.y + ny * over),
+        ]
+    };
+    [ext(from), ext(to)]
 }
 
 /// Longueur d'une pointe de cote, pour une épaisseur de trait.
@@ -796,11 +850,16 @@ impl Annotation {
             Shape::Arrow {
                 from,
                 to,
-                style: ArrowStyle::Inward,
-                ..
-            } => {
-                let [a, b] = dimension_line(*from, *to, self.width);
-                r(a, b)
+                style,
+                bend,
+            } if style.is_dimension() => {
+                let [a, b] = if *style == ArrowStyle::Inward {
+                    dimension_line(*from, *to, self.width)
+                } else {
+                    [*from, *to]
+                };
+                let [e1, e2] = dimension_extensions(*from, *to, *bend, self.width);
+                Bounds::from_points([a, b, e1[0], e1[1], e2[0], e2[1]]).unwrap_or(r(a, b))
             }
             Shape::Arrow { from, to, bend, .. } => {
                 Bounds::from_points(arrow_points(*from, *to, *bend)).unwrap_or(r(*from, *to))
@@ -908,12 +967,16 @@ impl Annotation {
                 } else {
                     0.0
                 };
-                let line = if *style == ArrowStyle::Inward {
-                    dimension_line(*from, *to, self.width).to_vec()
-                } else {
-                    arrow_points(*from, *to, *bend)
+                let line = match style {
+                    ArrowStyle::Inward => dimension_line(*from, *to, self.width).to_vec(),
+                    ArrowStyle::Dimension => vec![*from, *to],
+                    _ => arrow_points(*from, *to, *bend),
                 };
-                dist_to_polyline(p, &line) <= reach + extra
+                let on_extension = style.is_dimension()
+                    && dimension_extensions(*from, *to, *bend, self.width)
+                        .iter()
+                        .any(|[a, b]| dist_to_segment(p, *a, *b) <= tolerance + 1.0);
+                dist_to_polyline(p, &line) <= reach + extra || on_extension
             }
             Shape::Line { from, to } => dist_to_segment(p, *from, *to) <= reach,
             Shape::Pen { points } => dist_to_polyline(p, points) <= reach,
@@ -1038,6 +1101,14 @@ impl Annotation {
     /// Poignées d'édition de l'annotation sélectionnée (extrémités, coins, pointes).
     pub fn handles(&self) -> Vec<Pt> {
         match &self.shape {
+            Shape::Arrow {
+                from,
+                to,
+                bend,
+                style,
+            } if style.is_dimension() => {
+                vec![*from, *to, dimension_handle(*from, *to, *bend, self.width)]
+            }
             Shape::Arrow { from, to, bend, .. } => {
                 vec![*from, *to, bend.unwrap_or_else(|| from.lerp(*to, 0.5))]
             }
@@ -1074,6 +1145,17 @@ impl Annotation {
     /// Déplace la poignée `index` (voir [`Self::handles`]) au point `p`.
     pub fn move_handle(&mut self, index: usize, p: Pt) {
         match &mut self.shape {
+            Shape::Arrow {
+                from,
+                to,
+                bend,
+                style,
+            } if style.is_dimension() => match index {
+                0 => *from = p,
+                1 => *to = p,
+                // Longueur et côté des lignes de rappel.
+                _ => *bend = Some(p),
+            },
             Shape::Arrow { from, to, bend, .. } => match index {
                 0 => *from = p,
                 1 => *to = p,
@@ -1582,6 +1664,32 @@ mod tests {
                 .frame(no_text)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn dimension_handle_sets_the_extension_lines() {
+        let mut a = ann(Shape::Arrow {
+            from: Pt::new(100.0, 50.0),
+            to: Pt::new(0.0, 50.0),
+            style: ArrowStyle::Dimension,
+            bend: None,
+        });
+        // Tracée de droite à gauche (pointe désignée à gauche) : rappels vers le haut.
+        let [e, _] = dimension_extensions(Pt::new(100.0, 50.0), Pt::new(0.0, 50.0), None, 4.0);
+        assert!(e[0].y < 50.0 && e[1].y > 50.0);
+        let h = a.handles()[2];
+        assert_eq!(h.x, 50.0);
+        assert!(h.y < 50.0);
+        // La poignée tirée de l'autre côté : rappels vers le bas, de cette longueur.
+        a.move_handle(2, Pt::new(70.0, 130.0));
+        let Shape::Arrow { from, to, bend, .. } = a.shape else {
+            unreachable!()
+        };
+        let [e, f] = dimension_extensions(from, to, bend, 4.0);
+        assert_eq!(e[0], Pt::new(100.0, 130.0));
+        assert_eq!(f[0], Pt::new(0.0, 130.0));
+        assert!(a.hit(Pt::new(100.0, 110.0), 3.0, no_text));
+        assert!(a.bounds(no_text).max.y >= 130.0);
     }
 
     #[test]

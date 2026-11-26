@@ -251,9 +251,15 @@ impl Editor {
                         "Connecteur (ronds aux bouts)",
                     ),
                     (
+                        ArrowStyle::Dimension,
+                        icons::ARROW_DOUBLE,
+                        "Cote avec lignes de rappel (poignée du milieu : leur longueur)",
+                    ),
+                    (
                         ArrowStyle::Inward,
                         icons::ARROW_DOUBLE,
-                        "Cote par l'extérieur (pointes vers l'intérieur)",
+                        "Cote par l'extérieur, avec lignes de rappel (poignée du milieu : \
+                         leur longueur)",
                     ),
                 ] {
                     // Lot « Aperçus et tampons » : la variante rendue (l'icône reste
@@ -272,10 +278,12 @@ impl Editor {
                         changed = true;
                     }
                 }
-                ui.label(
-                    RichText::new(format!("{} poignée du milieu : courber", icons::CURVE))
-                        .color(theme::TEXT_DIM),
-                );
+                let hint = if self.style.arrow.is_dimension() {
+                    "poignée du milieu : longueur des rappels"
+                } else {
+                    "poignée du milieu : courber"
+                };
+                ui.label(RichText::new(format!("{} {hint}", icons::CURVE)).color(theme::TEXT_DIM));
             }
             Tool::Rect | Tool::Ellipse => {
                 if tool == Tool::Rect
