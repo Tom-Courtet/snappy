@@ -545,6 +545,7 @@ pub fn new_shape(tool: Tool, p: Pt, style: &Style, m: Metrics, next_step: u32) -
             to: p,
             style: style.arrow,
             bend: None,
+            ends: crate::model::DimensionEnds::default(),
         },
         Tool::Line => Shape::Line { from: p, to: p },
         Tool::Rect => Shape::Rect {

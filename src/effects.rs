@@ -452,11 +452,32 @@ pub fn transform_annotation(ann: &mut Annotation, f: &impl Fn(Pt) -> Pt, factor:
         *at = c.offset(-w / 2.0, -h / 2.0);
     };
     let handled = match &mut ann.shape {
-        Shape::Arrow { from, to, bend, .. } => {
+        Shape::Arrow {
+            from,
+            to,
+            bend,
+            ends,
+            ..
+        } => {
+            // Rappels réglés bout par bout : on suit leurs extrémités (un miroir les
+            // fait changer de côté), et les dépassements suivent l'échelle.
+            let tips = ends.reach.map(|_| {
+                let d = crate::model::Dimension::new(*from, *to, *bend, *ends, 0.0);
+                let [e0, e1] = d.extensions();
+                [f(e0[0]), f(e1[0])]
+            });
             mv(from);
             mv(to);
             if let Some(b) = bend {
                 mv(b);
+            }
+            if let Some([t0, t1]) = tips {
+                let d = crate::model::Dimension::new(*from, *to, None, *ends, 0.0);
+                ends.reach = Some([d.reach_toward(0, t0), d.reach_toward(1, t1)]);
+            }
+            if let Some(t) = &mut ends.tails {
+                t[0] *= factor;
+                t[1] *= factor;
             }
             true
         }

@@ -1225,6 +1225,13 @@ impl Editor {
                          comme fichier : elle se colle comme image dans le Finder ou une \
                          messagerie, et comme chemin dans un terminal.",
                     );
+                    ui.separator();
+                    ui.label(RichText::new("Barres d'outils").color(theme::TEXT_DIM));
+                    let big = ui.radio_value(&mut self.compact_bars, false, "Grandes");
+                    let compact = ui.radio_value(&mut self.compact_bars, true, "Compactes");
+                    if big.changed() || compact.changed() {
+                        self.save_prefs();
+                    }
                 });
                 let validate = egui::Button::new(
                     RichText::new(format!("{}  Valider", icons::OK)).color(theme::ON_ACCENT_2),

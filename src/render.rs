@@ -228,7 +228,18 @@ fn draw(
             to,
             style,
             bend,
-        } => draw_arrow(pixmap, *from, *to, *style, *bend, color, w, dash, ts),
+            ends,
+        } => draw_arrow(
+            pixmap,
+            *from,
+            *to,
+            *style,
+            (*bend, *ends),
+            color,
+            w,
+            dash,
+            ts,
+        ),
         Shape::Rect { a, b, radius } => {
             if let Some(path) = rounded_rect(Bounds::from_corners(*a, *b), *radius) {
                 if let Some(inside) = inside_fill(ann) {
@@ -488,12 +499,13 @@ fn draw_arrow(
     from: Pt,
     to: Pt,
     style: ArrowStyle,
-    bend: Option<Pt>,
+    (bend, ends): (Option<Pt>, crate::model::DimensionEnds),
     color: Rgba,
     width: f32,
     dash: LineStyle,
     ts: Transform,
 ) {
+    let dim = crate::model::Dimension::new(from, to, bend, ends, width);
     let chord = from.dist(to);
     if chord < 0.5 {
         return;
@@ -505,7 +517,7 @@ fn draw_arrow(
     if style.is_dimension() {
         // Lignes de rappel : fines, de la couleur de la cote, toujours pleines.
         let thin = stroke((width * 0.5).max(1.0));
-        for [a, b] in crate::model::dimension_extensions(from, to, bend, width) {
+        for [a, b] in dim.extensions() {
             if let Some(path) = polyline(&[a, b]) {
                 pixmap.stroke_path(&path, &paint(color), &thin, ts, None);
             }
@@ -518,7 +530,7 @@ fn draw_arrow(
             from,
             to,
             ArrowStyle::Double,
-            None,
+            (None, Default::default()),
             color,
             width,
             dash,
@@ -528,11 +540,11 @@ fn draw_arrow(
     }
     if style == ArrowStyle::Inward {
         // Cote par l'extérieur : trait prolongé, pointes vers l'intérieur.
-        let [a, b] = crate::model::dimension_line(from, to, width);
+        let [a, b] = dim.line();
         if let Some(path) = polyline(&[a, b]) {
             pixmap.stroke_path(&path, &paint(color), &dashed(stroke(width), dash), ts, None);
         }
-        let head = crate::model::dimension_head(width);
+        let head = dim.head;
         if let Some((ux, uy)) = unit(from, to) {
             arrow_head(pixmap, from, ux, uy, head, color, width, ts);
             arrow_head(pixmap, to, -ux, -uy, head, color, width, ts);
@@ -1667,6 +1679,7 @@ mod tests {
             to,
             style,
             bend: None,
+            ends: crate::model::DimensionEnds::default(),
         }
     }
 
@@ -1913,6 +1926,7 @@ mod tests {
             to: Pt::new(110.0, 70.0),
             style: ArrowStyle::Simple,
             bend: Some(Pt::new(60.0, 20.0)),
+            ends: crate::model::DimensionEnds::default(),
         };
         let out = render(&white(120, 90), &[ann(shape, RED)]);
         assert_eq!(out.get_pixel(60, 20).0, RED_PX);
@@ -2060,6 +2074,7 @@ mod tests {
                 to: Pt::new(160.0, 50.0),
                 style: ArrowStyle::Inward,
                 bend: None,
+                ends: crate::model::DimensionEnds::default(),
             },
             RED,
         );

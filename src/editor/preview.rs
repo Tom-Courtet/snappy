@@ -58,7 +58,17 @@ pub fn paint(painter: &Painter, view: View, ann: &Annotation) {
             to,
             style,
             bend,
-        } => arrow(painter, view, *from, *to, *style, *bend, ann.width, color),
+            ends,
+        } => arrow(
+            painter,
+            view,
+            *from,
+            *to,
+            *style,
+            (*bend, *ends),
+            ann.width,
+            color,
+        ),
         Shape::Rect { a, b, radius } => {
             let r = rect(*a, *b);
             let corner = CornerRadius::same((radius * s).min(255.0) as u8);
@@ -296,17 +306,18 @@ fn arrow(
     from: Pt,
     to: Pt,
     style: ArrowStyle,
-    bend: Option<Pt>,
+    (bend, ends): (Option<Pt>, crate::model::DimensionEnds),
     width: f32,
     color: Color32,
 ) {
+    let dim = crate::model::Dimension::new(from, to, bend, ends, width);
     let len = from.dist(to);
     if len < 0.5 {
         return;
     }
     if style.is_dimension() {
         let thin = Stroke::new((width * 0.5 * view.scale).max(1.0), color);
-        for [a, b] in crate::model::dimension_extensions(from, to, bend, width) {
+        for [a, b] in dim.extensions() {
             painter.line_segment([view.to_screen(a), view.to_screen(b)], thin);
         }
     }
@@ -317,7 +328,7 @@ fn arrow(
             from,
             to,
             ArrowStyle::Double,
-            None,
+            (None, Default::default()),
             width,
             color,
         );
@@ -325,12 +336,12 @@ fn arrow(
     }
     if style == ArrowStyle::Inward {
         // Cote par l'extérieur : trait prolongé, pointes vers l'intérieur.
-        let [a, b] = crate::model::dimension_line(from, to, width);
+        let [a, b] = dim.line();
         painter.line_segment(
             [view.to_screen(a), view.to_screen(b)],
             Stroke::new((width * view.scale).max(1.0), color),
         );
-        let head = crate::model::dimension_head(width);
+        let head = dim.head;
         for (tip, back) in [(from, a), (to, b)] {
             let d = tip.dist(back).max(1e-3);
             let (ux, uy) = ((tip.x - back.x) / d, (tip.y - back.y) / d);

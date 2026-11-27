@@ -116,7 +116,7 @@ pub enum ArrowStyle {
     Connector,
     /// Cote par l'extérieur : les pointes, posées sur les deux bouts, regardent vers
     /// l'intérieur, et le trait dépasse de chaque côté. Lignes de rappel aux deux
-    /// bouts (voir [`dimension_extensions`]).
+    /// bouts (voir [`Dimension`]).
     Inward,
     /// Cote : pointes aux deux bouts vers l'extérieur, et lignes de rappel. Diffère
     /// de `Double` par ces lignes et parce qu'elle reste droite.
@@ -150,44 +150,161 @@ pub fn dimension_reach(from: Pt, to: Pt, bend: Option<Pt>, width: f32) -> f32 {
     }
 }
 
-/// Poignée du milieu d'une cote : au bout des lignes de rappel, à mi-chemin.
-pub fn dimension_handle(from: Pt, to: Pt, bend: Option<Pt>, width: f32) -> Pt {
-    let (nx, ny) = dimension_normal(from, to);
-    let reach = dimension_reach(from, to, bend, width);
-    let m = from.lerp(to, 0.5);
-    Pt::new(m.x + nx * reach, m.y + ny * reach)
-}
-
-/// Lignes de rappel d'une cote : des bouts jusqu'à la longueur réglée, et un peu
-/// au-delà du trait de l'autre côté.
-pub fn dimension_extensions(from: Pt, to: Pt, bend: Option<Pt>, width: f32) -> [[Pt; 2]; 2] {
-    let (nx, ny) = dimension_normal(from, to);
-    let reach = dimension_reach(from, to, bend, width);
-    let over = -reach.signum() * dimension_head(width) * 0.5;
-    let ext = |p: Pt| {
-        [
-            Pt::new(p.x + nx * reach, p.y + ny * reach),
-            Pt::new(p.x + nx * over, p.y + ny * over),
-        ]
-    };
-    [ext(from), ext(to)]
-}
-
 /// Longueur d'une pointe de cote, pour une épaisseur de trait.
 pub fn dimension_head(width: f32) -> f32 {
     (width * 4.0).max(12.0)
 }
 
-/// Bouts du trait d'une cote par l'extérieur : `from` et `to` prolongés au-delà des
-/// pointes.
-pub fn dimension_line(from: Pt, to: Pt, width: f32) -> [Pt; 2] {
-    let d = from.dist(to).max(1e-3);
-    let (ux, uy) = ((to.x - from.x) / d, (to.y - from.y) / d);
-    let tail = dimension_head(width) * 2.2;
-    [
-        Pt::new(from.x - ux * tail, from.y - uy * tail),
-        Pt::new(to.x + ux * tail, to.y + uy * tail),
-    ]
+/// Réglages d'une cote bout par bout, posés par ses poignées : longueur signée de
+/// chaque ligne de rappel (bouts `from` puis `to`) et dépassement du trait au-delà
+/// de chaque bout (cote par l'extérieur). `None` : rappels de même longueur, réglée
+/// par la poignée du milieu, et dépassements par défaut.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct DimensionEnds {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reach: Option<[f32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tails: Option<[f32; 2]>,
+}
+
+/// Géométrie d'une cote : trait, lignes de rappel et poignées.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Dimension {
+    pub from: Pt,
+    pub to: Pt,
+    /// Longueurs signées des lignes de rappel, aux bouts `from` et `to`.
+    pub reach: [f32; 2],
+    /// Dépassements du trait au-delà de `from` et de `to` (cote par l'extérieur).
+    pub tails: [f32; 2],
+    pub head: f32,
+}
+
+impl Dimension {
+    pub fn new(from: Pt, to: Pt, bend: Option<Pt>, ends: DimensionEnds, width: f32) -> Self {
+        let head = dimension_head(width);
+        let reach = dimension_reach(from, to, bend, width);
+        Self {
+            from,
+            to,
+            reach: ends.reach.unwrap_or([reach; 2]),
+            tails: ends.tails.unwrap_or([head * 2.2; 2]),
+            head,
+        }
+    }
+
+    fn dir(&self) -> (f32, f32) {
+        let d = self.from.dist(self.to).max(1e-3);
+        ((self.to.x - self.from.x) / d, (self.to.y - self.from.y) / d)
+    }
+
+    fn end(&self, side: usize) -> Pt {
+        if side == 0 { self.from } else { self.to }
+    }
+
+    /// Point à `along` le long du trait et `across` sur la normale, depuis `p`.
+    fn at(&self, p: Pt, along: f32, across: f32) -> Pt {
+        let (ux, uy) = self.dir();
+        let (nx, ny) = dimension_normal(self.from, self.to);
+        Pt::new(
+            p.x + ux * along + nx * across,
+            p.y + uy * along + ny * across,
+        )
+    }
+
+    /// Longueur signée de la ligne de rappel du bout `side` qui irait jusqu'à `p`.
+    pub fn reach_toward(&self, side: usize, p: Pt) -> f32 {
+        let (nx, ny) = dimension_normal(self.from, self.to);
+        let e = self.end(side);
+        (p.x - e.x) * nx + (p.y - e.y) * ny
+    }
+
+    /// Dépassement du trait au-delà du bout `side` qui irait jusqu'à `p` (au moins
+    /// la longueur de la pointe, posée dessus).
+    fn tail_toward(&self, side: usize, p: Pt) -> f32 {
+        let (ux, uy) = self.dir();
+        let e = self.end(side);
+        let along = (p.x - e.x) * ux + (p.y - e.y) * uy;
+        let out = if side == 0 { -along } else { along };
+        out.max(self.head)
+    }
+
+    /// Bouts du trait d'une cote par l'extérieur : `from` et `to` prolongés au-delà
+    /// des pointes.
+    pub fn line(&self) -> [Pt; 2] {
+        [
+            self.at(self.from, -self.tails[0], 0.0),
+            self.at(self.to, self.tails[1], 0.0),
+        ]
+    }
+
+    /// Lignes de rappel : de chaque bout jusqu'à sa longueur, et un peu au-delà du
+    /// trait de l'autre côté.
+    pub fn extensions(&self) -> [[Pt; 2]; 2] {
+        let ext = |side: usize| {
+            let e = self.end(side);
+            let reach = self.reach[side];
+            let over = -reach.signum() * self.head * 0.5;
+            [self.at(e, 0.0, reach), self.at(e, 0.0, over)]
+        };
+        [ext(0), ext(1)]
+    }
+
+    /// Poignée du milieu : à mi-chemin, à la longueur moyenne des rappels.
+    pub fn middle(&self) -> Pt {
+        let m = self.from.lerp(self.to, 0.5);
+        self.at(m, 0.0, (self.reach[0] + self.reach[1]) / 2.0)
+    }
+
+    /// Poignées : les deux bouts, le milieu, le bout de chaque ligne de rappel et,
+    /// pour une cote par l'extérieur, le bout de chaque dépassement.
+    pub fn handles(&self, inward: bool) -> Vec<Pt> {
+        let [e0, e1] = self.extensions();
+        let mut h = vec![self.from, self.to, self.middle(), e0[0], e1[0]];
+        if inward {
+            h.extend(self.line());
+        }
+        h
+    }
+
+    /// Déplace la poignée `index` de [`Self::handles`] au point `p`.
+    fn move_handle(
+        &self,
+        index: usize,
+        p: Pt,
+        (from, to): (&mut Pt, &mut Pt),
+        bend: &mut Option<Pt>,
+        ends: &mut DimensionEnds,
+    ) {
+        match index {
+            0 => *from = p,
+            1 => *to = p,
+            // Milieu : les deux rappels ensemble. Tant qu'aucun n'a été réglé seul,
+            // c'est la poignée historique (`bend`).
+            2 => match &mut ends.reach {
+                Some(r) => {
+                    let m = self.from.lerp(self.to, 0.5);
+                    let (nx, ny) = dimension_normal(self.from, self.to);
+                    let delta = (p.x - m.x) * nx + (p.y - m.y) * ny - (r[0] + r[1]) / 2.0;
+                    r[0] += delta;
+                    r[1] += delta;
+                }
+                None => *bend = Some(p),
+            },
+            3 | 4 => {
+                let side = index - 3;
+                let mut r = self.reach;
+                r[side] = self.reach_toward(side, p);
+                ends.reach = Some(r);
+            }
+            5 | 6 => {
+                let side = index - 5;
+                let mut t = self.tails;
+                t[side] = self.tail_toward(side, p);
+                ends.tails = Some(t);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Forme d'une annotation. Les rectangles sont donnés par deux coins opposés
@@ -203,6 +320,9 @@ pub enum Shape {
         style: ArrowStyle,
         #[serde(default)]
         bend: Option<Pt>,
+        /// Cotes : réglages bout par bout (rappels, dépassements).
+        #[serde(default, skip_serializing_if = "is_default")]
+        ends: DimensionEnds,
     },
     Line {
         from: Pt,
@@ -852,13 +972,15 @@ impl Annotation {
                 to,
                 style,
                 bend,
+                ends,
             } if style.is_dimension() => {
+                let d = Dimension::new(*from, *to, *bend, *ends, self.width);
                 let [a, b] = if *style == ArrowStyle::Inward {
-                    dimension_line(*from, *to, self.width)
+                    d.line()
                 } else {
                     [*from, *to]
                 };
-                let [e1, e2] = dimension_extensions(*from, *to, *bend, self.width);
+                let [e1, e2] = d.extensions();
                 Bounds::from_points([a, b, e1[0], e1[1], e2[0], e2[1]]).unwrap_or(r(a, b))
             }
             Shape::Arrow { from, to, bend, .. } => {
@@ -960,20 +1082,21 @@ impl Annotation {
                 to,
                 bend,
                 style,
-                ..
+                ends,
             } => {
                 let extra = if *style == ArrowStyle::Big {
                     self.width * 2.0
                 } else {
                     0.0
                 };
+                let d = Dimension::new(*from, *to, *bend, *ends, self.width);
                 let line = match style {
-                    ArrowStyle::Inward => dimension_line(*from, *to, self.width).to_vec(),
+                    ArrowStyle::Inward => d.line().to_vec(),
                     ArrowStyle::Dimension => vec![*from, *to],
                     _ => arrow_points(*from, *to, *bend),
                 };
                 let on_extension = style.is_dimension()
-                    && dimension_extensions(*from, *to, *bend, self.width)
+                    && d.extensions()
                         .iter()
                         .any(|[a, b]| dist_to_segment(p, *a, *b) <= tolerance + 1.0);
                 dist_to_polyline(p, &line) <= reach + extra || on_extension
@@ -1106,9 +1229,9 @@ impl Annotation {
                 to,
                 bend,
                 style,
-            } if style.is_dimension() => {
-                vec![*from, *to, dimension_handle(*from, *to, *bend, self.width)]
-            }
+                ends,
+            } if style.is_dimension() => Dimension::new(*from, *to, *bend, *ends, self.width)
+                .handles(*style == ArrowStyle::Inward),
             Shape::Arrow { from, to, bend, .. } => {
                 vec![*from, *to, bend.unwrap_or_else(|| from.lerp(*to, 0.5))]
             }
@@ -1144,18 +1267,16 @@ impl Annotation {
 
     /// Déplace la poignée `index` (voir [`Self::handles`]) au point `p`.
     pub fn move_handle(&mut self, index: usize, p: Pt) {
+        let width = self.width;
         match &mut self.shape {
             Shape::Arrow {
                 from,
                 to,
                 bend,
                 style,
-            } if style.is_dimension() => match index {
-                0 => *from = p,
-                1 => *to = p,
-                // Longueur et côté des lignes de rappel.
-                _ => *bend = Some(p),
-            },
+                ends,
+            } if style.is_dimension() => Dimension::new(*from, *to, *bend, *ends, width)
+                .move_handle(index, p, (from, to), bend, ends),
             Shape::Arrow { from, to, bend, .. } => match index {
                 0 => *from = p,
                 1 => *to = p,
@@ -1539,6 +1660,7 @@ mod tests {
             to,
             style: ArrowStyle::Simple,
             bend: None,
+            ends: DimensionEnds::default(),
         }
     }
 
@@ -1673,23 +1795,85 @@ mod tests {
             to: Pt::new(0.0, 50.0),
             style: ArrowStyle::Dimension,
             bend: None,
+            ends: DimensionEnds::default(),
         });
+        let dim = |a: &Annotation| {
+            let Shape::Arrow {
+                from,
+                to,
+                bend,
+                ends,
+                ..
+            } = a.shape
+            else {
+                unreachable!()
+            };
+            Dimension::new(from, to, bend, ends, 4.0)
+        };
         // Tracée de droite à gauche (pointe désignée à gauche) : rappels vers le haut.
-        let [e, _] = dimension_extensions(Pt::new(100.0, 50.0), Pt::new(0.0, 50.0), None, 4.0);
+        let [e, _] = dim(&a).extensions();
         assert!(e[0].y < 50.0 && e[1].y > 50.0);
         let h = a.handles()[2];
         assert_eq!(h.x, 50.0);
         assert!(h.y < 50.0);
         // La poignée tirée de l'autre côté : rappels vers le bas, de cette longueur.
         a.move_handle(2, Pt::new(70.0, 130.0));
-        let Shape::Arrow { from, to, bend, .. } = a.shape else {
-            unreachable!()
-        };
-        let [e, f] = dimension_extensions(from, to, bend, 4.0);
+        let [e, f] = dim(&a).extensions();
         assert_eq!(e[0], Pt::new(100.0, 130.0));
         assert_eq!(f[0], Pt::new(0.0, 130.0));
         assert!(a.hit(Pt::new(100.0, 110.0), 3.0, no_text));
         assert!(a.bounds(no_text).max.y >= 130.0);
+
+        // Chaque rappel se règle seul par le bout de sa ligne (poignées 3 et 4)…
+        assert_eq!(a.handles().len(), 5);
+        a.move_handle(4, Pt::new(-5.0, 90.0));
+        let [e, f] = dim(&a).extensions();
+        assert_eq!(e[0], Pt::new(100.0, 130.0));
+        assert_eq!(f[0], Pt::new(0.0, 90.0));
+        // … et la poignée du milieu les décale ensuite ensemble, écart gardé.
+        assert_eq!(a.handles()[2], Pt::new(50.0, 110.0));
+        a.move_handle(2, Pt::new(50.0, 120.0));
+        let [e, f] = dim(&a).extensions();
+        assert_eq!((e[0].y, f[0].y), (140.0, 100.0));
+        // Le rappel passé de l'autre côté du trait change de côté, seul.
+        a.move_handle(3, Pt::new(100.0, 20.0));
+        let [e, f] = dim(&a).extensions();
+        assert!(e[0].y == 20.0 && e[1].y > 50.0);
+        assert_eq!(f[0].y, 100.0);
+    }
+
+    #[test]
+    fn inward_dimension_tails_have_their_own_handles() {
+        let mut a = ann(Shape::Arrow {
+            from: Pt::new(100.0, 50.0),
+            to: Pt::new(200.0, 50.0),
+            style: ArrowStyle::Inward,
+            bend: None,
+            ends: DimensionEnds::default(),
+        });
+        let h = a.handles();
+        assert_eq!(h.len(), 7);
+        assert!(h[5].x < 100.0 && h[6].x > 200.0);
+        // Le dépassement de gauche s'allonge, celui de droite reste.
+        a.move_handle(5, Pt::new(30.0, 60.0));
+        let h = a.handles();
+        assert_eq!(h[5], Pt::new(30.0, 50.0));
+        assert!(a.hit(Pt::new(35.0, 50.0), 2.0, no_text));
+        assert!(a.bounds(no_text).min.x <= 30.0);
+        // Jamais plus court que la pointe, qui reste posée sur le trait.
+        a.move_handle(6, Pt::new(150.0, 50.0));
+        assert_eq!(a.handles()[6].x, 200.0 + dimension_head(4.0));
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(json.contains("tails"), "{json}");
+        // Une cote sans réglage bout par bout s'enregistre comme avant.
+        let plain = ann(Shape::Arrow {
+            from: Pt::new(0.0, 0.0),
+            to: Pt::new(9.0, 0.0),
+            style: ArrowStyle::Inward,
+            bend: None,
+            ends: DimensionEnds::default(),
+        });
+        assert!(!serde_json::to_string(&plain).unwrap().contains("ends"));
     }
 
     #[test]

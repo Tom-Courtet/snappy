@@ -196,6 +196,8 @@ pub(crate) struct Editor {
     pastes: u32,
     tool_presets: BTreeMap<Tool, Vec<tools::Style>>,
     validate_with_path: bool,
+    /// Barres d'outils et d'options compactes (taille d'origine).
+    compact_bars: bool,
     /// « Continuer la numérotation depuis cette valeur » : prochaine pastille imposée.
     step_from: Option<u32>,
     /// « Copier une partie de l'image » : le prochain glisser choisit la zone.
@@ -288,6 +290,7 @@ impl Editor {
             pastes: 0,
             tool_presets: prefs.tool_presets,
             validate_with_path: prefs.validate_with_path,
+            compact_bars: prefs.compact_bars,
             step_from: None,
             grab_part: false,
             confirm_delete: false,
@@ -326,6 +329,7 @@ impl Editor {
             presets: self.presets.clone(),
             tool_presets: self.tool_presets.clone(),
             validate_with_path: self.validate_with_path,
+            compact_bars: self.compact_bars,
         }
         .save(&self.prefs_path);
     }
@@ -1355,21 +1359,30 @@ impl eframe::App for Editor {
             )
             .show_separator_line(false)
             .show(ui, |ui| self.title_bar(ui));
+        // Grandes barres : icônes, vignettes et textes agrandis, et plus d'air.
+        let k = if self.compact_bars {
+            1.0
+        } else {
+            bars::BIG_BARS
+        };
+        let air = |m: f32| (m * k).round() as i8;
+        bars::set_scale(k);
         egui::Panel::top("tools")
             .frame(
                 Frame::new()
                     .fill(theme::SURFACE)
-                    .inner_margin(Margin::symmetric(12, 8)),
+                    .inner_margin(Margin::symmetric(12, air(8.0))),
             )
             .show(ui, |ui| self.toolbar(ui));
         egui::Panel::top("options")
             .frame(
                 Frame::new()
                     .fill(theme::BG)
-                    .inner_margin(Margin::symmetric(12, 6)),
+                    .inner_margin(Margin::symmetric(12, air(6.0))),
             )
             .show_separator_line(false)
             .show(ui, |ui| self.options_bar(ui));
+        bars::set_scale(1.0);
         egui::Panel::bottom("status")
             .frame(
                 Frame::new()

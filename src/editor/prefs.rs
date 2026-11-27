@@ -31,6 +31,8 @@ pub struct Prefs {
     /// « Valider » copie aussi le chemin : l'image est exportée et placée dans le
     /// presse-papiers comme fichier.
     pub validate_with_path: bool,
+    /// Barres d'outils et d'options à leur taille d'origine, plus petite.
+    pub compact_bars: bool,
 }
 
 impl Default for Prefs {
@@ -41,6 +43,7 @@ impl Default for Prefs {
             presets: Vec::new(),
             tool_presets: BTreeMap::new(),
             validate_with_path: false,
+            compact_bars: false,
         }
     }
 }

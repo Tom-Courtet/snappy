@@ -1,6 +1,8 @@
 //! Barres de l'éditeur : outils et export (en haut), options du style (en dessous,
 //! selon l'outil ou l'annotation sélectionnée), état (en bas).
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use egui::{Align, Layout, RichText, Sense, Stroke, Ui, Vec2, vec2};
 
 use super::Editor;
@@ -14,7 +16,48 @@ use crate::ui::{icons, keys, theme};
 
 /// Texte d'icône à la taille des barres.
 fn icon(s: &str) -> RichText {
-    RichText::new(s).size(theme::SIZE_ICON)
+    RichText::new(s).size(theme::SIZE_ICON * scale())
+}
+
+/// Échelle des barres d'outils et d'options en cours de dessin : 1 pour les barres
+/// compactes (la taille d'origine), [`BIG_BARS`] pour les grandes. Posée par
+/// [`set_scale`] autour de ces deux barres, à 1 partout ailleurs.
+static SCALE: AtomicU32 = AtomicU32::new(0x3f80_0000);
+
+/// Échelle des grandes barres.
+pub(super) const BIG_BARS: f32 = 1.3;
+
+pub(super) fn set_scale(k: f32) {
+    SCALE.store(k.to_bits(), Ordering::Relaxed);
+}
+
+fn scale() -> f32 {
+    f32::from_bits(SCALE.load(Ordering::Relaxed))
+}
+
+/// Les textes grandissent un peu moins que les icônes et les vignettes.
+fn text_scale() -> f32 {
+    1.0 + (scale() - 1.0) * 0.6
+}
+
+/// Agrandit les textes, boutons et champs d'une barre à l'échelle courante.
+fn grow(ui: &mut Ui) {
+    let (k, t) = (scale(), text_scale());
+    if k == 1.0 {
+        return;
+    }
+    let style = ui.style_mut();
+    for font in style.text_styles.values_mut() {
+        font.size *= t;
+    }
+    style.spacing.button_padding *= k;
+    style.spacing.interact_size *= k;
+    style.spacing.slider_width *= k;
+}
+
+/// Taille des vignettes d'options (variantes d'outil, styles de trait).
+fn option_tile() -> Vec2 {
+    OPTION_TILE * scale()
 }
 
 /// Choix sélectionnable : fond lime et texte noir quand il est actif.
@@ -29,16 +72,17 @@ fn choice(ui: &mut Ui, selected: bool, text: RichText) -> egui::Response {
 
 /// Pastille de couleur cliquable.
 fn swatch(ui: &mut Ui, color: Rgba, selected: bool) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+    let k = scale();
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(22.0 * k), Sense::click());
     let painter = ui.painter();
     let c = rect.center();
     if selected {
-        painter.circle_stroke(c, 10.0, Stroke::new(2.0, theme::ACCENT_2));
+        painter.circle_stroke(c, 10.0 * k, Stroke::new(2.0, theme::ACCENT_2));
     } else if response.hovered() {
-        painter.circle_stroke(c, 10.0, Stroke::new(1.0, theme::TEXT_DIM));
+        painter.circle_stroke(c, 10.0 * k, Stroke::new(1.0, theme::TEXT_DIM));
     }
-    painter.circle_filled(c, 7.0, preview::color32(color));
-    painter.circle_stroke(c, 7.0, Stroke::new(1.0, theme::BORDER));
+    painter.circle_filled(c, 7.0 * k, preview::color32(color));
+    painter.circle_stroke(c, 7.0 * k, Stroke::new(1.0, theme::BORDER));
     response
 }
 
@@ -53,6 +97,7 @@ impl Editor {
 
     pub(super) fn toolbar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
+            grow(ui);
             ui.spacing_mut().item_spacing.x = 3.0;
             for (tool, glyph, name, key) in TOOLS {
                 let tip = format!("{name} ({})", key.name());
@@ -126,6 +171,7 @@ impl Editor {
 
     pub(super) fn options_bar(&mut self, ui: &mut Ui) {
         ui.horizontal_wrapped(|ui| {
+            grow(ui);
             ui.spacing_mut().item_spacing.x = 4.0;
             self.color_options(ui);
             ui.separator();
@@ -137,7 +183,7 @@ impl Editor {
                 if choice(
                     ui,
                     self.style.size == size,
-                    RichText::new(label).size(theme::SIZE_M),
+                    RichText::new(label).size(theme::SIZE_M * text_scale()),
                 )
                 .on_hover_text(format!("Épaisseur et taille ({key})"))
                 .clicked()
@@ -190,7 +236,7 @@ impl Editor {
         let response = ui
             .menu_button(
                 RichText::new(icons::PALETTE)
-                    .size(theme::SIZE_ICON)
+                    .size(theme::SIZE_ICON * scale())
                     .color(if custom { color } else { theme::TEXT }),
                 |ui| {
                     ui.set_min_width(220.0);
@@ -319,7 +365,7 @@ impl Editor {
                     if choice(
                         ui,
                         selected,
-                        RichText::new(format!("×{zoom}")).size(theme::SIZE_M),
+                        RichText::new(format!("×{zoom}")).size(theme::SIZE_M * text_scale()),
                     )
                     .on_hover_text("Grossissement")
                     .clicked()
@@ -333,7 +379,7 @@ impl Editor {
                 // Lot « Aperçus et tampons » : le tampon courant, tel qu'il sera
                 // dessiné ; un clic ouvre le panneau des tampons.
                 let ctx = ui.ctx().clone();
-                let size = vec2(44.0, 28.0);
+                let size = vec2(44.0, 28.0) * scale();
                 let base = previews::stamp_base(&self.style);
                 let stamp = self.style.stamp.clone();
                 let tex = self.previews.stamp(&ctx, &stamp, &self.style, base, size);
@@ -512,7 +558,7 @@ const OPTION_TILE: Vec2 = vec2(34.0, 24.0);
 
 /// Petit libellé de choix, à la taille des barres.
 fn word(text: &str) -> RichText {
-    RichText::new(text).size(theme::SIZE_M)
+    RichText::new(text).size(theme::SIZE_M * text_scale())
 }
 
 impl Editor {
@@ -627,7 +673,7 @@ impl Editor {
                                     ui,
                                     Some(*tex),
                                     None,
-                                    OPTION_TILE,
+                                    option_tile(),
                                     selected,
                                     *bg,
                                 );
@@ -725,7 +771,7 @@ impl Editor {
                                         ui,
                                         Some(tex),
                                         None,
-                                        OPTION_TILE,
+                                        option_tile(),
                                         *value == shape,
                                         bg,
                                     );
@@ -1027,7 +1073,7 @@ impl Editor {
         let assets = self.user_stamps_dir();
         let tex = self
             .previews
-            .tool(&ctx, tool, style, OPTION_TILE, Some(&assets));
+            .tool(&ctx, tool, style, option_tile(), Some(&assets));
         (tex, previews::tile_paper(Sample::Tool(tool), style))
     }
 
@@ -1040,7 +1086,7 @@ impl Editor {
         selected: bool,
     ) -> egui::Response {
         let (tex, bg) = self.variant_texture(ui, tool, style);
-        previews::tile(ui, Some(tex), None, OPTION_TILE, selected, bg)
+        previews::tile(ui, Some(tex), None, option_tile(), selected, bg)
     }
 
     /// Curseur de zoom (en % de la taille réelle).
