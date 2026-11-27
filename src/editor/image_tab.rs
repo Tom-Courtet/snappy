@@ -210,7 +210,12 @@ impl Editor {
     /// Bouton « Image » de la barre d'outils.
     pub(super) fn image_button(&mut self, ui: &mut Ui) {
         ui.separator();
-        let text = RichText::new(format!("{}  Image", icons::IMAGE)).size(theme::SIZE_M);
+        // Barre en colonne : l'icône seule, pour rester étroite.
+        let text = if self.toolbar_side == super::prefs::ToolbarSide::Top {
+            RichText::new(format!("{}  Image", icons::IMAGE)).size(theme::SIZE_M)
+        } else {
+            RichText::new(icons::IMAGE).size(theme::SIZE_ICON)
+        };
         let open = self.image.open;
         if ui
             .selectable_label(open, text)

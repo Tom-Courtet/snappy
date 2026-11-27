@@ -33,6 +33,19 @@ pub struct Prefs {
     pub validate_with_path: bool,
     /// Barres d'outils et d'options à leur taille d'origine, plus petite.
     pub compact_bars: bool,
+    /// Place de la barre d'outils.
+    pub toolbar_side: ToolbarSide,
+}
+
+/// Place de la barre d'outils : en haut (d'origine), ou en colonne à gauche ou à
+/// droite de l'image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolbarSide {
+    #[default]
+    Top,
+    Left,
+    Right,
 }
 
 impl Default for Prefs {
@@ -44,6 +57,7 @@ impl Default for Prefs {
             tool_presets: BTreeMap::new(),
             validate_with_path: false,
             compact_bars: false,
+            toolbar_side: ToolbarSide::Top,
         }
     }
 }
@@ -128,6 +142,15 @@ impl Prefs {
 mod tests {
     use super::*;
     use crate::model::{ArrowStyle, PALETTE};
+
+    #[test]
+    fn older_prefs_keep_the_toolbar_on_top_and_big() {
+        let prefs: Prefs = serde_json::from_str(r#"{"tool":"rect"}"#).unwrap();
+        assert_eq!(prefs.toolbar_side, ToolbarSide::Top);
+        assert!(!prefs.compact_bars);
+        let left: Prefs = serde_json::from_str(r#"{"toolbar_side":"left"}"#).unwrap();
+        assert_eq!(left.toolbar_side, ToolbarSide::Left);
+    }
 
     #[test]
     fn prefs_round_trip_and_survive_garbage() {

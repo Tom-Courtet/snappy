@@ -189,20 +189,29 @@ impl Editor {
                 return;
             }
         };
-        // Un réglage tiré au curseur ne fait qu'un pas d'annulation.
-        if !ctx.input(|inp| inp.pointer.any_down()) {
-            self.options_editing = false;
-        }
+        // La fenêtre suit la forme, sauf pendant qu'on tire un de ses curseurs : la
+        // taille qui change déplacerait sinon le curseur sous la souris.
+        let beside = square.right_top() + vec2(10.0, 0.0);
+        let pos = match self.options_pos {
+            Some(pos) if self.options_editing => pos,
+            _ => beside,
+        };
+        self.options_pos = Some(pos);
         egui::Area::new(egui::Id::unique("options_de_dessin"))
             .order(egui::Order::Foreground)
-            .fixed_pos(square.right_top() + vec2(10.0, 0.0))
+            .fixed_pos(pos)
             .constrain(true)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_max_width(340.0);
+                    ui.set_max_width(460.0);
                     self.options_contents(ui, i);
                 });
             });
+        // Un réglage tiré au curseur ne fait qu'un pas d'annulation. Remis à zéro
+        // après la fenêtre : à l'image du relâchement, elle n'a pas encore bougé.
+        if !ctx.input(|inp| inp.pointer.any_down()) {
+            self.options_editing = false;
+        }
     }
 
     fn options_contents(&mut self, ui: &mut Ui, i: usize) {
@@ -223,7 +232,9 @@ impl Editor {
             .spacing([10.0, 6.0])
             .show(ui, |ui| {
                 ui.label("Couleur :");
-                ui.horizontal_wrapped(|ui| {
+                // Sur une ligne : passée à la ligne, la pipette chevauchait le
+                // curseur d'opacité.
+                ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     self.color_options(ui);
                 });

@@ -165,6 +165,9 @@ pub(crate) struct Editor {
     drag: Option<Drag>,
     text: Option<TextEditing>,
     texture: Option<TextureHandle>,
+    /// Tampon ou image en cours de glissement, rendu seul à la taille de l'écran
+    /// (l'aperçu egui ne sait pas les dessiner) : l'annotation rendue et sa texture.
+    sprite: Option<(Annotation, TextureHandle)>,
     /// Rendu affiché (pour la pipette).
     composite: Option<RgbaImage>,
     /// Annotations absentes du rendu affiché, `None` : à refaire.
@@ -198,6 +201,15 @@ pub(crate) struct Editor {
     validate_with_path: bool,
     /// Barres d'outils et d'options compactes (taille d'origine).
     compact_bars: bool,
+    /// Place de la barre d'outils.
+    toolbar_side: prefs::ToolbarSide,
+    /// Position d'« Options de dessin » à l'image précédente (gardée pendant qu'on
+    /// tire un de ses curseurs).
+    options_pos: Option<egui::Pos2>,
+    /// Barre d'outils à gauche ou à droite : taille d'un bouton d'outil (mesurée)
+    /// et nombre de colonnes.
+    tool_cell: egui::Vec2,
+    toolbar_cols: usize,
     /// « Continuer la numérotation depuis cette valeur » : prochaine pastille imposée.
     step_from: Option<u32>,
     /// « Copier une partie de l'image » : le prochain glisser choisit la zone.
@@ -221,11 +233,11 @@ pub(crate) struct Editor {
     /// Vignettes rendues (préréglages, favoris, options, tampons).
     previews: previews::Previews,
     /// Palette des préréglages ouverte : son outil et son coin haut gauche.
-    palette: Option<(Tool, egui::Pos2)>,
+    palette: Option<(Tool, palettes::Anchor)>,
     /// Panneau des tampons ouvert : son coin haut gauche.
-    stamp_panel: Option<egui::Pos2>,
+    stamp_panel: Option<palettes::Anchor>,
     /// Sous le bouton de l'outil Tampon : où ouvrir le panneau depuis un menu.
-    stamp_anchor: egui::Pos2,
+    stamp_anchor: palettes::Anchor,
     /// Image où un panneau flottant s'est ouvert (ce clic-là ne le referme pas).
     popup_frame: u64,
     // --- Poignées de cadre et « Options de dessin » (voir `frame.rs`)
@@ -273,6 +285,7 @@ impl Editor {
             drag: None,
             text: None,
             texture: None,
+            sprite: None,
             composite: None,
             rendered: None,
             zoom: None,
@@ -291,6 +304,10 @@ impl Editor {
             tool_presets: prefs.tool_presets,
             validate_with_path: prefs.validate_with_path,
             compact_bars: prefs.compact_bars,
+            toolbar_side: prefs.toolbar_side,
+            options_pos: None,
+            tool_cell: vec2(52.0, 40.0),
+            toolbar_cols: 1,
             step_from: None,
             grab_part: false,
             confirm_delete: false,
@@ -303,7 +320,10 @@ impl Editor {
             previews: Default::default(),
             palette: None,
             stamp_panel: None,
-            stamp_anchor: egui::pos2(12.0, 90.0),
+            stamp_anchor: palettes::Anchor::below(Rect::from_min_size(
+                pos2(12.0, 60.0),
+                vec2(30.0, 26.0),
+            )),
             popup_frame: 0,
             frame_start: None,
             drawing_options: None,
@@ -330,6 +350,7 @@ impl Editor {
             tool_presets: self.tool_presets.clone(),
             validate_with_path: self.validate_with_path,
             compact_bars: self.compact_bars,
+            toolbar_side: self.toolbar_side,
         }
         .save(&self.prefs_path);
     }
@@ -706,6 +727,64 @@ impl Editor {
         }
     }
 
+    /// Dessine `ann` (tampon ou image glissé) rendu pour de vrai, à la résolution de
+    /// l'écran. Le rendu n'est refait que si l'annotation ou le zoom changent.
+    fn paint_sprite(
+        &mut self,
+        ctx: &egui::Context,
+        painter: &egui::Painter,
+        view: View,
+        ann: &Annotation,
+    ) {
+        let b = ann.bounds(render::text_size);
+        // Marge pour l'ombre et le trait.
+        let area = b.expand((b.width().max(b.height()) * 0.15).max(8.0) + ann.width);
+        let k = (view.scale * self.density).clamp(0.05, 2.0);
+        let (w, h) = (
+            (area.width() * k).ceil().clamp(1.0, 4096.0),
+            (area.height() * k).ceil().clamp(1.0, 4096.0),
+        );
+        let mut local = ann.clone();
+        let sprite = crate::model::Bounds {
+            min: Pt::new(0.0, 0.0),
+            max: Pt::new(area.width() * k, area.height() * k),
+        };
+        local.fit(area, sprite);
+        local.width *= k;
+        if self.sprite.as_ref().is_none_or(|(a, _)| *a != local) {
+            let base = RgbaImage::new(w as u32, h as u32);
+            let img = render::render_with(
+                &base,
+                &[local.clone()],
+                Some(&render::assets_dir(&self.path)),
+            );
+            let color = egui::ColorImage::from_rgba_unmultiplied(
+                [img.width() as usize, img.height() as usize],
+                img.as_raw(),
+            );
+            let tex = match self.sprite.take() {
+                Some((_, mut t)) => {
+                    t.set(color, TextureOptions::LINEAR);
+                    t
+                }
+                None => ctx.load_texture("glisse", color, TextureOptions::LINEAR),
+            };
+            self.sprite = Some((local, tex));
+        }
+        if let Some((_, tex)) = &self.sprite {
+            let shown = crate::model::Bounds {
+                min: area.min,
+                max: Pt::new(area.min.x + w / k, area.min.y + h / k),
+            };
+            painter.image(
+                tex.id(),
+                view.rect(shown),
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+    }
+
     fn refresh_texture(&mut self, ctx: &egui::Context) {
         let hidden = self.hidden_all();
         if self.rendered.as_ref() == Some(&hidden) && self.texture.is_some() {
@@ -849,8 +928,21 @@ impl Editor {
                 Act::Escape => {
                     if self.picking {
                         self.picking = false;
+                    } else if self.drawing_options.is_some()
+                        || self.palette.is_some()
+                        || self.stamp_panel.is_some()
+                    {
+                        // Une fenêtre flottante ouverte : Échap ne ferme qu'elle.
+                        self.drawing_options = None;
+                        self.palette = None;
+                        self.stamp_panel = None;
                     } else {
                         self.selected = None;
+                        // Échap quitte aussi l'outil de dessin : retour à la
+                        // sélection, comme V.
+                        if self.tool != Tool::Select {
+                            self.set_tool(Tool::Select);
+                        }
                     }
                 }
                 Act::Copy => self.copy(),
@@ -929,7 +1021,12 @@ impl Editor {
                     && self.text.is_none()
                     && let Some(ann) = self.doc.annotations.get(i)
                 {
-                    preview::paint(&painter, view, ann);
+                    if needs_sprite(ann) {
+                        let ann = ann.clone();
+                        self.paint_sprite(&ctx, &painter, view, &ann);
+                    } else {
+                        preview::paint(&painter, view, ann);
+                    }
                 }
                 self.extra_paint(&painter, view);
                 if let Some(i) = self.selected
@@ -1231,6 +1328,7 @@ impl Editor {
                 self.reorder_selected(false);
                 ui.close();
             }
+            self.shape_presets_menu(ui);
             ui.separator();
             if ui
                 .button(format!(
@@ -1367,13 +1465,15 @@ impl eframe::App for Editor {
         };
         let air = |m: f32| (m * k).round() as i8;
         bars::set_scale(k);
-        egui::Panel::top("tools")
-            .frame(
-                Frame::new()
-                    .fill(theme::SURFACE)
-                    .inner_margin(Margin::symmetric(12, air(8.0))),
-            )
-            .show(ui, |ui| self.toolbar(ui));
+        if self.toolbar_side == prefs::ToolbarSide::Top {
+            egui::Panel::top("tools")
+                .frame(
+                    Frame::new()
+                        .fill(theme::SURFACE)
+                        .inner_margin(Margin::symmetric(12, air(8.0))),
+                )
+                .show(ui, |ui| self.toolbar(ui));
+        }
         egui::Panel::top("options")
             .frame(
                 Frame::new()
@@ -1391,15 +1491,51 @@ impl eframe::App for Editor {
             )
             .show_separator_line(false)
             .show(ui, |ui| self.status_bar(ui));
+        // Barre d'outils en colonne, entre la barre d'options et la barre d'état.
+        if self.toolbar_side != prefs::ToolbarSide::Top {
+            bars::set_scale(k);
+            let panel = if self.toolbar_side == prefs::ToolbarSide::Left {
+                egui::Panel::left("tools")
+            } else {
+                egui::Panel::right("tools")
+            };
+            panel
+                .frame(
+                    Frame::new()
+                        .fill(theme::SURFACE)
+                        .inner_margin(Margin::symmetric(8, 10)),
+                )
+                .exact_size(self.toolbar_width())
+                .resizable(false)
+                .show(ui, |ui| self.toolbar(ui));
+            bars::set_scale(1.0);
+        }
         egui::CentralPanel::default()
             .frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(16)))
             .show(ui, |ui| self.canvas(ui));
         self.floating_panels(&ctx);
+        // Une retouche faite pendant ce passage (curseur d'« Options de dessin »,
+        // fin d'un glissement, panneau…) n'est rendue qu'au suivant : on le demande
+        // tout de suite, sans attendre un mouvement de la souris.
+        if self.rendered.as_ref() != Some(&self.hidden_all()) {
+            ctx.request_repaint();
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.commit_text();
         self.finish_polygon();
         self.save_prefs();
+    }
+}
+
+/// Annotations que l'aperçu egui ne sait pas dessiner fidèlement pendant un
+/// glissement : tampons en image (pas un pictogramme de la police) et images
+/// insérées.
+fn needs_sprite(ann: &Annotation) -> bool {
+    match &ann.shape {
+        Shape::Stamp { icon, .. } => !tools::is_icon_glyph(icon),
+        Shape::Image { .. } => true,
+        _ => false,
     }
 }

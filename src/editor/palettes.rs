@@ -16,6 +16,7 @@ use egui::{
 };
 
 use super::Editor;
+use super::prefs::ToolbarSide;
 use super::previews::{self, Sample};
 use super::tools::{
     FILE_PREFIX, LABEL_PREFIX, MORE_STAMPS, MOUSE_STAMPS, STAMP_SCALE_RANGE, STAMPS, TEXT_STAMPS,
@@ -28,6 +29,8 @@ use crate::ui::{icons, theme};
 
 /// Vignette de la palette des préréglages.
 const PRESET_TILE: Vec2 = vec2(84.0, 52.0);
+/// Vignette d'un préréglage dans le menu du clic droit.
+const MENU_TILE: Vec2 = vec2(48.0, 30.0);
 /// Vignette carrée d'un tampon.
 const ICON_TILE: Vec2 = vec2(44.0, 44.0);
 /// Vignette d'un tampon large (texte, pointeur à étiquette).
@@ -85,16 +88,50 @@ pub fn stamp_name(stamp: &str) -> String {
         .map_or_else(|| "Tampon".to_owned(), |s| s.1.to_owned())
 }
 
+/// Où s'ouvre un panneau flottant : un point et le coin du panneau qui s'y pose.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Anchor {
+    pub pos: Pos2,
+    pub pivot: Align2,
+}
+
+impl Anchor {
+    /// Sous un bouton d'une barre horizontale.
+    pub fn below(button: Rect) -> Self {
+        Self {
+            pos: button.left_bottom() + vec2(0.0, 4.0),
+            pivot: Align2::LEFT_TOP,
+        }
+    }
+
+    /// À côté d'un bouton de la barre d'outils : dessous quand elle est en haut, à
+    /// sa droite quand elle est à gauche, à sa gauche quand elle est à droite.
+    pub fn beside(button: Rect, side: ToolbarSide) -> Self {
+        match side {
+            ToolbarSide::Top => Self::below(button),
+            ToolbarSide::Left => Self {
+                pos: button.right_top() + vec2(4.0, 0.0),
+                pivot: Align2::LEFT_TOP,
+            },
+            ToolbarSide::Right => Self {
+                pos: button.left_top() - vec2(4.0, 0.0),
+                pivot: Align2::RIGHT_TOP,
+            },
+        }
+    }
+}
+
 /// Panneau flottant posé en `anchor`, au-dessus du reste.
 fn floating(
     ctx: &egui::Context,
     id: &str,
-    anchor: Pos2,
+    anchor: Anchor,
     add: impl FnOnce(&mut Ui),
 ) -> egui::Response {
     egui::Area::new(Id::unique(id))
         .order(Order::Foreground)
-        .fixed_pos(anchor)
+        .pivot(anchor.pivot)
+        .fixed_pos(anchor.pos)
         .constrain(true)
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, add);
@@ -164,7 +201,7 @@ impl Editor {
     }
 
     /// Ouvre (ou ferme) la palette des préréglages de `tool` sous `anchor`.
-    pub(super) fn toggle_palette(&mut self, ctx: &egui::Context, tool: Tool, anchor: Pos2) {
+    pub(super) fn toggle_palette(&mut self, ctx: &egui::Context, tool: Tool, anchor: Anchor) {
         if self.palette.is_some_and(|(t, _)| t == tool) {
             self.palette = None;
         } else {
@@ -175,7 +212,7 @@ impl Editor {
     }
 
     /// Ouvre (ou ferme) le panneau des tampons sous `anchor`.
-    pub(super) fn toggle_stamp_panel(&mut self, ctx: &egui::Context, anchor: Pos2) {
+    pub(super) fn toggle_stamp_panel(&mut self, ctx: &egui::Context, anchor: Anchor) {
         if self.stamp_panel.is_some() {
             self.stamp_panel = None;
         } else {
@@ -317,6 +354,64 @@ impl Editor {
         }
     }
 
+    /// Sous-menu « Préréglages » du clic droit sur une forme : enregistrer son style
+    /// comme nouveau préréglage de son outil, ou en remplacer un.
+    pub(super) fn shape_presets_menu(&mut self, ui: &mut Ui) {
+        use super::prefs::{MAX_TOOL_PRESETS, ToolPresets};
+        let Some(ann) = self.selected.and_then(|i| self.doc.annotations.get(i)) else {
+            return;
+        };
+        let tool = tool_of(&ann.shape);
+        let mut style = self.style.clone();
+        style.adopt(ann);
+        let list = self.tool_presets.get(&tool).cloned().unwrap_or_default();
+        let assets = self.user_stamps_dir();
+        let ctx = ui.ctx().clone();
+        let mut done = None;
+        ui.menu_button(format!("{}  Préréglages", icons::STAR), |ui| {
+            let full = list.len() >= MAX_TOOL_PRESETS;
+            if ui
+                .button(format!(
+                    "{}  Enregistrer comme nouveau préréglage",
+                    icons::ADD
+                ))
+                .on_hover_text(if full {
+                    "La liste est pleine : le plus ancien préréglage laisse sa place"
+                } else {
+                    "Ajoute le style de cette forme aux préréglages de son outil"
+                })
+                .clicked()
+            {
+                let n = self.tool_presets.add(tool, style.clone()) + 1;
+                done = Some(format!("Préréglage {n} enregistré"));
+                ui.close();
+            }
+            ui.add_enabled_ui(!list.is_empty(), |ui| {
+                ui.menu_button("Remplacer un préréglage", |ui| {
+                    for (i, old) in list.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let tex = self
+                                .previews
+                                .tool(&ctx, tool, old, MENU_TILE, Some(&assets));
+                            let bg = previews::tile_paper(Sample::Tool(tool), old);
+                            let tile = previews::tile(ui, Some(tex), None, MENU_TILE, false, bg);
+                            let label = ui.button(format!("Préréglage {}", i + 1));
+                            if tile.clicked() || label.clicked() {
+                                self.tool_presets.overwrite(tool, i, style.clone());
+                                done = Some(format!("Préréglage {} remplacé", i + 1));
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+            });
+        });
+        if let Some(text) = done {
+            self.save_prefs();
+            self.say(text);
+        }
+    }
+
     /// Vignettes de tampons, à la suite (retour à la ligne à la largeur de la
     /// colonne).
     fn stamp_tiles(
@@ -388,7 +483,7 @@ impl Editor {
         let mut browse = false;
         let mut open_dir = false;
         let mut close = false;
-        let max_height = (ctx.content_rect().bottom() - anchor.y - 70.0).max(220.0);
+        let max_height = (ctx.content_rect().bottom() - anchor.pos.y - 70.0).max(220.0);
         let response = floating(ctx, "panneau_tampons", anchor, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Tampons et icônes").strong());
@@ -630,6 +725,27 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panels_open_beside_the_toolbar() {
+        let button = Rect::from_min_size(Pos2::new(100.0, 50.0), vec2(40.0, 30.0));
+        let top = Anchor::beside(button, ToolbarSide::Top);
+        assert_eq!(
+            (top.pos, top.pivot),
+            (Pos2::new(100.0, 84.0), Align2::LEFT_TOP)
+        );
+        let left = Anchor::beside(button, ToolbarSide::Left);
+        assert_eq!(
+            (left.pos, left.pivot),
+            (Pos2::new(144.0, 50.0), Align2::LEFT_TOP)
+        );
+        // À droite : le panneau s'ouvre vers la gauche, son coin haut droit au bouton.
+        let right = Anchor::beside(button, ToolbarSide::Right);
+        assert_eq!(
+            (right.pos, right.pivot),
+            (Pos2::new(96.0, 50.0), Align2::RIGHT_TOP)
+        );
+    }
 
     #[test]
     fn images_scale_around_their_center() {

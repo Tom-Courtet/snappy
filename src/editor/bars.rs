@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use egui::{Align, Layout, RichText, Sense, Stroke, Ui, Vec2, vec2};
 
 use super::Editor;
+use super::palettes::Anchor;
 use super::prefs::Preset;
+use super::prefs::ToolbarSide;
 use super::preview;
 use super::previews::{self, Sample};
 use super::tools::{Size, Style, TOOLS, Tool, tool_of};
@@ -96,30 +98,74 @@ impl Editor {
     }
 
     pub(super) fn toolbar(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            grow(ui);
+        if self.toolbar_side == ToolbarSide::Top {
+            ui.horizontal(|ui| self.toolbar_items(ui));
+        } else {
+            // En colonne, sur plusieurs si la fenêtre est trop basse ; au-delà, tout
+            // défile.
+            let columns = self.toolbar_columns(ui.available_height());
+            if columns != self.toolbar_cols {
+                self.toolbar_cols = columns;
+                ui.ctx().request_repaint();
+            }
+            egui::ScrollArea::vertical()
+                .id_salt("outils")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| self.toolbar_items(ui));
+                });
+        }
+    }
+
+    /// Nombre de colonnes de la barre d'outils posée à gauche ou à droite : une, ou
+    /// plus si sa hauteur ne suffit pas pour tous les outils l'un sous l'autre.
+    fn toolbar_columns(&self, height: f32) -> usize {
+        // Outils, bouton Image et étoile des favoris.
+        let rows = TOOLS.len() as f32 + 2.0;
+        let needed = rows * (self.tool_cell.y + 3.0) + 30.0;
+        ((needed / height.max(1.0)).ceil() as usize).clamp(1, 3)
+    }
+
+    /// Largeur de la barre d'outils posée à gauche ou à droite.
+    pub(super) fn toolbar_width(&self) -> f32 {
+        (self.toolbar_cols as f32 * (self.tool_cell.x + 3.0) + 16.0).round()
+    }
+
+    fn tool_button(
+        &mut self,
+        ui: &mut Ui,
+        (tool, glyph, name, key): (Tool, &str, &str, egui::Key),
+    ) {
+        let side = self.toolbar_side;
+        let tip = format!("{name} ({})", key.name());
+        let response = choice(ui, self.tool == tool, icon(glyph)).on_hover_text(tip);
+        self.tool_cell = response.rect.size();
+        // Lot « Aperçus et tampons » : un second clic sur l'outil actif ouvre
+        // sa palette de préréglages (le panneau des tampons pour le tampon).
+        if tool == Tool::Stamp {
+            self.stamp_anchor = Anchor::beside(response.rect, side);
+        }
+        if response.clicked() {
+            if self.tool == tool {
+                let ctx = ui.ctx().clone();
+                let anchor = Anchor::beside(response.rect, side);
+                match tool {
+                    Tool::Select => {}
+                    Tool::Stamp => self.toggle_stamp_panel(&ctx, anchor),
+                    _ => self.toggle_palette(&ctx, tool, anchor),
+                }
+            } else {
+                self.set_tool(tool);
+            }
+        }
+    }
+
+    fn toolbar_items(&mut self, ui: &mut Ui) {
+        grow(ui);
+        if self.toolbar_side == ToolbarSide::Top {
             ui.spacing_mut().item_spacing.x = 3.0;
-            for (tool, glyph, name, key) in TOOLS {
-                let tip = format!("{name} ({})", key.name());
-                let response = choice(ui, self.tool == tool, icon(glyph)).on_hover_text(tip);
-                // Lot « Aperçus et tampons » : un second clic sur l'outil actif ouvre
-                // sa palette de préréglages (le panneau des tampons pour le tampon).
-                if tool == Tool::Stamp {
-                    self.stamp_anchor = response.rect.left_bottom() + vec2(0.0, 4.0);
-                }
-                if response.clicked() {
-                    if self.tool == tool {
-                        let ctx = ui.ctx().clone();
-                        let anchor = response.rect.left_bottom() + vec2(0.0, 4.0);
-                        match tool {
-                            Tool::Select => {}
-                            Tool::Stamp => self.toggle_stamp_panel(&ctx, anchor),
-                            _ => self.toggle_palette(&ctx, tool, anchor),
-                        }
-                    } else {
-                        self.set_tool(tool);
-                    }
-                }
+            for entry in TOOLS {
+                self.tool_button(ui, entry);
             }
             ui.separator();
             self.image_button(ui);
@@ -130,7 +176,23 @@ impl Editor {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| self.presets_bar(ui));
                 });
-        });
+            return;
+        }
+        ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
+        let columns = self.toolbar_cols;
+        egui::Grid::new("outils")
+            .spacing([3.0, 3.0])
+            .show(ui, |ui| {
+                for (n, entry) in TOOLS.into_iter().enumerate() {
+                    self.tool_button(ui, entry);
+                    if (n + 1) % columns == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
+        ui.separator();
+        self.image_button(ui);
+        self.presets_bar(ui);
     }
 
     /// Dossier, Enregistrer et Copier (dans la barre de titre, à gauche de
@@ -387,8 +449,7 @@ impl Editor {
                 let response = previews::tile(ui, Some(tex), None, size, open, theme::SURFACE_HI)
                     .on_hover_text(format!("Choisir le tampon · {}", stamp_label(&stamp)));
                 if response.clicked() {
-                    let anchor = response.rect.left_bottom() + vec2(0.0, 4.0);
-                    self.toggle_stamp_panel(&ctx, anchor);
+                    self.toggle_stamp_panel(&ctx, Anchor::below(response.rect));
                 }
             }
             Tool::Step => {
@@ -1026,8 +1087,7 @@ impl Editor {
         );
         if response.clicked() {
             let ctx = ui.ctx().clone();
-            let anchor = response.rect.left_bottom() + vec2(0.0, 4.0);
-            self.toggle_palette(&ctx, tool, anchor);
+            self.toggle_palette(&ctx, tool, Anchor::below(response.rect));
         }
     }
 

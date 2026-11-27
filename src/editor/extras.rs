@@ -1229,7 +1229,19 @@ impl Editor {
                     ui.label(RichText::new("Barres d'outils").color(theme::TEXT_DIM));
                     let big = ui.radio_value(&mut self.compact_bars, false, "Grandes");
                     let compact = ui.radio_value(&mut self.compact_bars, true, "Compactes");
-                    if big.changed() || compact.changed() {
+                    ui.separator();
+                    ui.label(RichText::new("Place de la barre d'outils").color(theme::TEXT_DIM));
+                    let mut side = self.toolbar_side;
+                    for (value, label) in [
+                        (super::prefs::ToolbarSide::Top, "En haut"),
+                        (super::prefs::ToolbarSide::Left, "À gauche"),
+                        (super::prefs::ToolbarSide::Right, "À droite"),
+                    ] {
+                        ui.radio_value(&mut side, value, label);
+                    }
+                    let moved = side != self.toolbar_side;
+                    self.toolbar_side = side;
+                    if big.changed() || compact.changed() || moved {
                         self.save_prefs();
                     }
                 });
